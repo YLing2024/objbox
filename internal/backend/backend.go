@@ -20,8 +20,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/YLing2024/objbox/internal/usage"
 	"github.com/johannesboyne/gofakes3"
 )
 
@@ -43,6 +45,9 @@ type Backend struct {
 	root string
 	meta *metaStore
 	now  func() time.Time
+
+	// mpMu 串行化分片任务的 Complete/Abort，避免同一 uploadId 被并发完成或边传边删。
+	mpMu sync.Mutex
 }
 
 // New 打开（或创建）root 下的存储后端，并在启动时用磁盘内容重建/修正索引。
@@ -63,6 +68,11 @@ func New(root string) (*Backend, error) {
 	}
 	b := &Backend{root: abs, meta: meta, now: time.Now}
 	if err := b.Reconcile(); err != nil {
+		meta.Close()
+		return nil, err
+	}
+	// 启动时清理超过 24 小时未完成的分片任务（简单实现，失败只记日志不影响启动）。
+	if _, err := b.CleanupExpiredUploads(multipartExpiry); err != nil {
 		meta.Close()
 		return nil, err
 	}
@@ -418,14 +428,132 @@ func (b *Backend) ListBucket(name string, prefix *gofakes3.Prefix, page gofakes3
 	return out, nil
 }
 
-// DeleteMulti 未实现（M0 范围之外，批量删属 M1）。
-func (b *Backend) DeleteMulti(_ string, _ ...string) (gofakes3.MultiDeleteResult, error) {
-	return gofakes3.MultiDeleteResult{}, gofakes3.ErrNotImplemented
+// DeleteMulti 批量删除。不存在的 key 视为成功（S3 语义）；
+// 非法 key 记入 Error 列表，绝不越过本账号 root。
+func (b *Backend) DeleteMulti(bucket string, objects ...string) (gofakes3.MultiDeleteResult, error) {
+	if !b.bucketExists(bucket) {
+		return gofakes3.MultiDeleteResult{}, gofakes3.BucketNotFound(bucket)
+	}
+	out := gofakes3.MultiDeleteResult{}
+	for _, key := range objects {
+		if err := ValidateKey(key); err != nil {
+			out.Error = append(out.Error, gofakes3.ErrorResult{
+				Key:     key,
+				Code:    gofakes3.ErrInvalidArgument,
+				Message: err.Error(),
+			})
+			continue
+		}
+		if _, err := b.DeleteObject(bucket, key); err != nil {
+			out.Error = append(out.Error, gofakes3.ErrorResultFromError(err))
+			continue
+		}
+		out.Deleted = append(out.Deleted, gofakes3.ObjectID{Key: key})
+	}
+	return out, nil
 }
 
-// CopyObject 未实现（M0 范围之外，CopyObject 属 M1）。
-func (b *Backend) CopyObject(_, _, _, _ string, _ map[string]string) (gofakes3.CopyObjectResult, error) {
-	return gofakes3.CopyObjectResult{}, gofakes3.ErrNotImplemented
+// CopyObject 在同账号 root 内复制对象（源与目标 bucket 由上层保证属于同一账号）。
+func (b *Backend) CopyObject(srcBucket, srcKey, dstBucket, dstKey string, meta map[string]string) (gofakes3.CopyObjectResult, error) {
+	srcPath, err := SafeJoin(b.root, srcBucket, srcKey)
+	if err != nil {
+		return gofakes3.CopyObjectResult{}, invalidPathErr(err)
+	}
+	dstPath, err := SafeJoin(b.root, dstBucket, dstKey)
+	if err != nil {
+		return gofakes3.CopyObjectResult{}, invalidPathErr(err)
+	}
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return gofakes3.CopyObjectResult{}, gofakes3.KeyNotFound(srcKey)
+		}
+		return gofakes3.CopyObjectResult{}, fmt.Errorf("backend: 打开源对象失败: %w", err)
+	}
+	defer src.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dstPath), dirMode); err != nil {
+		return gofakes3.CopyObjectResult{}, fmt.Errorf("backend: 创建目录失败: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dstPath), tmpPrefix)
+	if err != nil {
+		return gofakes3.CopyObjectResult{}, fmt.Errorf("backend: 创建临时文件失败: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	h := md5.New()
+	n, err := io.Copy(io.MultiWriter(tmp, h), src)
+	if err != nil {
+		tmp.Close()
+		return gofakes3.CopyObjectResult{}, fmt.Errorf("backend: 复制对象失败: %w", err)
+	}
+	if err := tmp.Chmod(fileMode); err != nil {
+		tmp.Close()
+		return gofakes3.CopyObjectResult{}, fmt.Errorf("backend: 设置对象权限失败: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return gofakes3.CopyObjectResult{}, fmt.Errorf("backend: fsync 对象失败: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return gofakes3.CopyObjectResult{}, fmt.Errorf("backend: 关闭临时文件失败: %w", err)
+	}
+	if err := os.Rename(tmpName, dstPath); err != nil {
+		return gofakes3.CopyObjectResult{}, fmt.Errorf("backend: 替换对象失败: %w", err)
+	}
+
+	now := b.now().UTC()
+	etag := hex.EncodeToString(h.Sum(nil))
+	om := objectMeta{
+		Size:         n,
+		ETag:         etag,
+		ContentType:  meta["Content-Type"],
+		LastModified: now.UnixNano(),
+		UserMeta:     userMetaFromHeaders(meta),
+	}
+	if err := b.meta.Put(dstBucket, dstKey, om); err != nil {
+		return gofakes3.CopyObjectResult{}, err
+	}
+	return gofakes3.CopyObjectResult{
+		ETag:         `"` + etag + `"`,
+		LastModified: gofakes3.NewContentTime(now),
+	}, nil
+}
+
+// ObjectSize 返回对象大小；对象不存在或非法路径返回 ok=false。
+// 供 HTTP 层在 Range 非法时生成 Content-Range: bytes */<size>。
+func (b *Backend) ObjectSize(bucket, key string) (int64, bool) {
+	path, err := SafeJoin(b.root, bucket, key)
+	if err != nil {
+		return 0, false
+	}
+	fi, err := os.Stat(path)
+	if err != nil || fi.IsDir() {
+		return 0, false
+	}
+	return fi.Size(), true
+}
+
+// AccountUsage 统计账号 root 下所有桶目录的字节数，排除 .objbox 内部目录。
+func (b *Backend) AccountUsage() (int64, error) {
+	entries, err := os.ReadDir(b.root)
+	if err != nil {
+		return 0, fmt.Errorf("backend: 读取 root 失败: %w", err)
+	}
+	var total int64
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		size, err := usage.DirSize(filepath.Join(b.root, e.Name()))
+		if err != nil {
+			return 0, err
+		}
+		total += size
+	}
+	return total, nil
 }
 
 // ---- 列表与重建 ----

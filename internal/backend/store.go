@@ -24,7 +24,38 @@ func (m objectMeta) modified() time.Time {
 	return time.Unix(0, m.LastModified).UTC()
 }
 
-var metaBucketName = []byte("objects")
+// partMeta 是分片上传中单个分片的元数据。
+type partMeta struct {
+	Size         int64  `json:"size"`
+	ETag         string `json:"etag"` // 分片内容的 MD5 十六进制（不带引号）
+	LastModified int64  `json:"lastModified"`
+}
+
+// uploadMeta 是一个未完成分片任务在 bbolt 中的记录。
+//
+// 分片文件本体放在账号 root 的 .objbox/multipart/<uploadId>/ 下，
+// 这里只保存定位与清单信息，避免把大文件读进内存。
+type uploadMeta struct {
+	Bucket      string            `json:"bucket"`
+	Key         string            `json:"key"`
+	UploadID    string            `json:"uploadId"`
+	Initiated   int64             `json:"initiated"` // UnixNano
+	ContentType string            `json:"contentType,omitempty"`
+	UserMeta    map[string]string `json:"userMeta,omitempty"`
+	Parts       map[int]partMeta  `json:"parts,omitempty"`
+}
+
+func (u uploadMeta) initiatedTime() time.Time {
+	if u.Initiated == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, u.Initiated).UTC()
+}
+
+var (
+	metaBucketName    = []byte("objects")
+	uploadsBucketName = []byte("uploads")
+)
 
 // metaStore 封装 bbolt，提供 bucket/key -> objectMeta 的读写。
 type metaStore struct {
@@ -38,7 +69,10 @@ func openMetaStore(path string) (*metaStore, error) {
 		return nil, fmt.Errorf("backend: 打开元数据库失败: %w", err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(metaBucketName)
+		if _, err := tx.CreateBucketIfNotExists(metaBucketName); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucketIfNotExists(uploadsBucketName)
 		return err
 	}); err != nil {
 		db.Close()
@@ -157,4 +191,123 @@ func splitMetaKey(k []byte) (bucket, key string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+// ---- 分片上传元数据 ----
+
+// uploadKey 用 bucket + NUL + key + NUL + uploadId 组成主键，
+// 既能按 bucket 前缀扫描，也能精确定位单个 uploadId。
+func uploadKey(bucket, key, id string) []byte {
+	b := make([]byte, 0, len(bucket)+len(key)+len(id)+2)
+	b = append(b, bucket...)
+	b = append(b, 0)
+	b = append(b, key...)
+	b = append(b, 0)
+	b = append(b, id...)
+	return b
+}
+
+func uploadBucketPrefix(bucket string) []byte {
+	b := make([]byte, 0, len(bucket)+1)
+	b = append(b, bucket...)
+	b = append(b, 0)
+	return b
+}
+
+func (m *metaStore) PutUpload(u uploadMeta) error {
+	raw, err := json.Marshal(u)
+	if err != nil {
+		return fmt.Errorf("backend: 序列化分片元数据失败: %w", err)
+	}
+	return m.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(uploadsBucketName).Put(uploadKey(u.Bucket, u.Key, u.UploadID), raw)
+	})
+}
+
+func (m *metaStore) GetUpload(bucket, key, id string) (uploadMeta, bool, error) {
+	var out uploadMeta
+	var found bool
+	err := m.db.View(func(tx *bolt.Tx) error {
+		raw := tx.Bucket(uploadsBucketName).Get(uploadKey(bucket, key, id))
+		if raw == nil {
+			return nil
+		}
+		found = true
+		return json.Unmarshal(raw, &out)
+	})
+	if err != nil {
+		return uploadMeta{}, false, fmt.Errorf("backend: 读取分片元数据失败: %w", err)
+	}
+	return out, found, nil
+}
+
+// UpdateUpload 在单个 bbolt 事务内完成「读-改-写」，保证并发上传同一 uploadId
+// 的不同分片时元数据更新串行且不丢更新。upload 不存在时返回 ok=false。
+func (m *metaStore) UpdateUpload(bucket, key, id string, fn func(*uploadMeta) error) (uploadMeta, bool, error) {
+	var out uploadMeta
+	var found bool
+	err := m.db.Update(func(tx *bolt.Tx) error {
+		bkt := tx.Bucket(uploadsBucketName)
+		k := uploadKey(bucket, key, id)
+		raw := bkt.Get(k)
+		if raw == nil {
+			return nil
+		}
+		found = true
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return err
+		}
+		if err := fn(&out); err != nil {
+			return err
+		}
+		updated, err := json.Marshal(out)
+		if err != nil {
+			return err
+		}
+		return bkt.Put(k, updated)
+	})
+	if err != nil {
+		return uploadMeta{}, false, fmt.Errorf("backend: 更新分片元数据失败: %w", err)
+	}
+	return out, found, nil
+}
+
+func (m *metaStore) DeleteUpload(bucket, key, id string) error {
+	return m.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(uploadsBucketName).Delete(uploadKey(bucket, key, id))
+	})
+}
+
+// ListUploadsByBucket 返回某个 bucket 下全部未完成分片任务。
+func (m *metaStore) ListUploadsByBucket(bucket string) ([]uploadMeta, error) {
+	pfx := uploadBucketPrefix(bucket)
+	var out []uploadMeta
+	err := m.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(uploadsBucketName).Cursor()
+		for k, v := c.Seek(pfx); k != nil && hasPrefix(k, pfx); k, v = c.Next() {
+			var u uploadMeta
+			if err := json.Unmarshal(v, &u); err != nil {
+				return err
+			}
+			out = append(out, u)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("backend: 扫描分片元数据失败: %w", err)
+	}
+	return out, nil
+}
+
+// RangeUploads 遍历全部未完成分片任务，供启动时过期清理使用。
+func (m *metaStore) RangeUploads(fn func(uploadMeta) error) error {
+	return m.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(uploadsBucketName).ForEach(func(_, v []byte) error {
+			var u uploadMeta
+			if err := json.Unmarshal(v, &u); err != nil {
+				return err
+			}
+			return fn(u)
+		})
+	})
 }
