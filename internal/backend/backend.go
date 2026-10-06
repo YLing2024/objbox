@@ -747,6 +747,9 @@ func responseMetadata(md objectMeta, modTime time.Time) map[string]string {
 	}
 	if md.ContentType != "" {
 		out["Content-Type"] = md.ContentType
+	} else {
+		// 保证 GET/HEAD 一定带 Content-Type（S3 默认 application/octet-stream）。
+		out["Content-Type"] = "application/octet-stream"
 	}
 	for k, v := range md.UserMeta {
 		out[k] = v
