@@ -42,7 +42,7 @@
 | 管理页前端 | React+Vite+TS / 原生 / Svelte | **React 19 + Vite + TS，产物 `//go:embed`** | 与 davbox（`web/embed.go`）、homepage 同栈 ✓ |
 | 管理端认证 | 自带口令 / SSO | **`AUTH_MODE=builtin`（默认）/ `sso`（Auth Gateway）** | 沿用 davbox 铁律：**协议端点永远 AK/SK，不受 AUTH_MODE 影响** ✓ |
 | 部署 | systemd 单二进制 / Docker / K8s | **systemd 单二进制 + 可选 Docker** | 轻 ✓；K8s ✗ |
-| 端口/数据/域名 | — | **127.0.0.1:18930**（已确认空闲）/ `/data/objbox`（ext4，剩 40G）/ `s3.s3.example.com` | 与 davbox（18900）并列 |
+| 端口/数据/域名 | — | **127.0.0.1:18930**（已确认空闲）/ `/data/objbox`（ext4，剩 40G）/ `s3.example.com` | 与 davbox（18900）并列 |
 
 ---
 
@@ -81,7 +81,7 @@
 | 4 | 签名校验 | 复用 aws-sdk-go-v2 signer 重算比对，不自研密码学 |
 | 5 | 权限模型 | 只有账号级 `readonly` |
 | 6 | 管理页 | React+Vite+TS（M3），`AUTH_MODE=builtin/sso` |
-| 7 | 部署 | systemd 单二进制，`127.0.0.1:18930`，`/data/objbox`，`s3.s3.example.com` |
+| 7 | 部署 | systemd 单二进制，`127.0.0.1:18930`，`/data/objbox`，`s3.example.com` |
 | 8 | 实施第一步 | 只做 §4 的 0.5 天门槛验证，通过后我再写需求书 |
 
 **你确认（或改哪条）之后我才动手。**
