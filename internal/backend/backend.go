@@ -434,6 +434,10 @@ func (b *Backend) DeleteMulti(bucket string, objects ...string) (gofakes3.MultiD
 	if !b.bucketExists(bucket) {
 		return gofakes3.MultiDeleteResult{}, gofakes3.BucketNotFound(bucket)
 	}
+	// S3 单次批量删除最多 1000 个 key。
+	if len(objects) > 1000 {
+		return gofakes3.MultiDeleteResult{}, gofakes3.ErrorMessage(gofakes3.ErrMalformedXML, "DeleteObjects 单次最多 1000 个 key")
+	}
 	out := gofakes3.MultiDeleteResult{}
 	for _, key := range objects {
 		if err := ValidateKey(key); err != nil {
