@@ -200,6 +200,26 @@ func TestAnonymousRejectedWhenAccountsExist(t *testing.T) {
 	}
 }
 
+func TestHTTPRangeRequest(t *testing.T) {
+	ts, _, alice, _ := newTestServer(t)
+	create := signedDo(t, ts, http.MethodPut, "/range-bucket", nil, alice, nil)
+	create.Body.Close()
+	put := signedDo(t, ts, http.MethodPut, "/range-bucket/nums", []byte("0123456789"), alice, nil)
+	put.Body.Close()
+
+	get := signedDo(t, ts, http.MethodGet, "/range-bucket/nums", nil, alice, map[string]string{"Range": "bytes=2-5"})
+	body := readBody(t, get)
+	if get.StatusCode != http.StatusPartialContent {
+		t.Fatalf("Range 状态 = %d，期望 206", get.StatusCode)
+	}
+	if string(body) != "2345" {
+		t.Fatalf("Range 内容 = %q，期望 2345", body)
+	}
+	if cr := get.Header.Get("Content-Range"); cr != "bytes 2-5/10" {
+		t.Fatalf("Content-Range = %q，期望 bytes 2-5/10", cr)
+	}
+}
+
 func TestAccessLogMasksAuthorization(t *testing.T) {
 	store, err := account.Load(t.TempDir())
 	if err != nil {
