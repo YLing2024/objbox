@@ -432,6 +432,26 @@ func (s *Store) SetDisabled(name string, disabled bool) error {
 	return nil
 }
 
+// SetQuota 设置账号配额（字节）；<=0 表示不限。
+func (s *Store) SetQuota(name string, quotaBytes int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.findLocked(name)
+	if !ok {
+		return fmt.Errorf("account: 账号 %q 不存在", name)
+	}
+
+	na := a.Clone()
+	na.QuotaBytes = quotaBytes
+	s.replaceLocked(a, na)
+	if err := s.saveLocked(); err != nil {
+		s.replaceLocked(na, a)
+		return err
+	}
+	s.refreshSigLocked()
+	return nil
+}
+
 // Remove 从账号表移除账号（不删除其 root 数据目录，避免误删）。
 func (s *Store) Remove(name string) error {
 	s.mu.Lock()
