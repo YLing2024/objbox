@@ -22,7 +22,8 @@ import (
 
 // Server 是本项目的 S3 HTTP 入口。
 type Server struct {
-	auth *auth.Authenticator
+	auth  *auth.Authenticator
+	store *account.Store
 
 	// AccessLog 为 true 时打印访问日志；Authorization 一律脱敏。
 	AccessLog bool
@@ -39,6 +40,7 @@ func New(store *account.Store) (*Server, error) {
 	}
 	s := &Server{
 		auth:     auth.NewAuthenticator(store),
+		store:    store,
 		handlers: map[string]http.Handler{},
 		backends: map[string]*backend.Backend{},
 	}
@@ -89,6 +91,10 @@ func (s *Server) handlerFor(a *account.Account) (http.Handler, error) {
 
 // ServeHTTP 实现 http.Handler。
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 处理请求前先看 accounts.json 是否被 CLI 改过；有变化立即换表。
+	// 解析失败时 MaybeReload 保留旧表，不会退化成全部 403。
+	s.store.MaybeReload()
+
 	if s.AccessLog {
 		log.Printf("%s %s auth=%s", r.Method, r.URL.Path, auth.MaskAuthorization(r.Header.Get("Authorization")))
 	}
