@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/textproto"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +29,10 @@ const (
 	Service = "s3"
 	// MaxSkew 是允许的时钟偏移。
 	MaxSkew = 15 * time.Minute
+	// MaxPresignExpires 是预签名 URL 的最长有效期（7 天，S3 上限）。
+	MaxPresignExpires = 7 * 24 * time.Hour
+	// UnsignedPayload 是预签名请求使用的 payload hash（S3 预签名不签 body）。
+	UnsignedPayload = "UNSIGNED-PAYLOAD"
 
 	amzDateFormat = "20060102T150405Z"
 	terminator    = "aws4_request"
@@ -42,6 +48,7 @@ const (
 	CodeRequestTimeTooSkewed  Code = "RequestTimeTooSkewed"
 	CodeInvalidRequest        Code = "InvalidRequest"
 	CodeInternalError         Code = "InternalError"
+	CodeQuotaExceeded         Code = "QuotaExceeded"
 )
 
 // Error 是一次认证/校验失败，携带 S3 错误码、消息与 HTTP 状态。
@@ -76,9 +83,19 @@ func RequestTimeTooSkewed() *Error {
 	}
 }
 
+// RequestExpired 返回 403 AccessDenied，文案为 S3 的 "Request has expired"。
+func RequestExpired() *Error {
+	return &Error{Code: CodeAccessDenied, Message: "Request has expired", Status: http.StatusForbidden}
+}
+
 // InvalidRequestf 返回 400 InvalidRequest，原因写入消息。
 func InvalidRequestf(format string, args ...any) *Error {
 	return &Error{Code: CodeInvalidRequest, Message: fmt.Sprintf(format, args...), Status: http.StatusBadRequest}
+}
+
+// QuotaExceeded 返回 403 QuotaExceeded。
+func QuotaExceeded() *Error {
+	return &Error{Code: CodeQuotaExceeded, Message: "Quota exceeded", Status: http.StatusForbidden}
 }
 
 // InternalErrorf 返回 500 InternalError。
@@ -97,23 +114,30 @@ func NewAuthenticator(store *account.Store) *Authenticator {
 	return &Authenticator{store: store, now: time.Now}
 }
 
-// Authenticate 按 §3.3 的顺序校验请求，成功返回账号。
+// Authenticate 校验请求并解析出账号。
+//
+// 优先使用 Authorization 头（SigV4 header 签名）；没有该头但 query 带
+// X-Amz-Signature 时走预签名（query 签名）校验。两条路径复用同一套
+// aws-sdk-go-v2/aws/signer/v4 重算逻辑，不另写密码学。
 func (a *Authenticator) Authenticate(r *http.Request) (*account.Account, error) {
-	header := r.Header.Get("Authorization")
-	if header == "" {
-		return nil, AccessDenied()
+	if header := r.Header.Get("Authorization"); header != "" {
+		return a.authenticateHeader(r, header)
 	}
+	if r.URL.Query().Get("X-Amz-Signature") != "" {
+		return a.authenticatePresigned(r)
+	}
+	return nil, AccessDenied()
+}
+
+// authenticateHeader 校验 Authorization 头签名。
+func (a *Authenticator) authenticateHeader(r *http.Request, header string) (*account.Account, error) {
 	comp, err := parseAuthorization(header)
 	if err != nil {
 		return nil, AccessDenied()
 	}
-
-	acct, ok := a.store.GetByAK(comp.Scope.AccessKey)
-	if !ok || acct == nil {
-		return nil, AccessDenied()
-	}
-	if acct.Disabled {
-		return nil, AccessDenied()
+	acct, err := a.lookupAccount(comp.Scope.AccessKey)
+	if err != nil {
+		return nil, err
 	}
 
 	t, ok := requestTime(r)
@@ -123,7 +147,6 @@ func (a *Authenticator) Authenticate(r *http.Request) (*account.Account, error) 
 	if skew := a.now().Sub(t); skew > MaxSkew || skew < -MaxSkew {
 		return nil, RequestTimeTooSkewed()
 	}
-
 	if acct.Readonly && isWriteMethod(r.Method) {
 		return nil, AccessDenied()
 	}
@@ -134,6 +157,70 @@ func (a *Authenticator) Authenticate(r *http.Request) (*account.Account, error) 
 	}
 	if computed == "" || subtle.ConstantTimeCompare([]byte(computed), []byte(comp.Signature)) != 1 {
 		return nil, SignatureDoesNotMatch()
+	}
+	return acct, nil
+}
+
+// authenticatePresigned 校验 query 签名（预签名 URL）。
+//
+// 过期检查先于签名比对：已过期一律 403 "Request has expired"，
+// 且由于签名覆盖 X-Amz-Date，任何篡改都仍会被签名比对拒绝。
+func (a *Authenticator) authenticatePresigned(r *http.Request) (*account.Account, error) {
+	q := r.URL.Query()
+	if q.Get("X-Amz-Algorithm") != Algorithm {
+		return nil, AccessDenied()
+	}
+	comp, err := parseQueryComponents(q)
+	if err != nil {
+		return nil, AccessDenied()
+	}
+	acct, err := a.lookupAccount(comp.Scope.AccessKey)
+	if err != nil {
+		return nil, err
+	}
+
+	t, ok := parseAmzDate(q.Get("X-Amz-Date"))
+	if !ok {
+		return nil, AccessDenied()
+	}
+	expires, err := strconv.ParseInt(q.Get("X-Amz-Expires"), 10, 64)
+	if err != nil || expires < 0 {
+		return nil, AccessDenied()
+	}
+	if time.Duration(expires)*time.Second > MaxPresignExpires {
+		return nil, &Error{
+			Code:    CodeAccessDenied,
+			Message: "X-Amz-Expires must be less than a week (604800)",
+			Status:  http.StatusForbidden,
+		}
+	}
+
+	now := a.now()
+	if now.After(t.Add(time.Duration(expires) * time.Second)) {
+		return nil, RequestExpired()
+	}
+	if t.Sub(now) > MaxSkew {
+		return nil, RequestTimeTooSkewed()
+	}
+	if acct.Readonly && isWriteMethod(r.Method) {
+		return nil, AccessDenied()
+	}
+
+	ok, err = verifyPresign(r, acct, comp, t)
+	if err != nil {
+		return nil, SignatureDoesNotMatch()
+	}
+	if !ok {
+		return nil, SignatureDoesNotMatch()
+	}
+	return acct, nil
+}
+
+// lookupAccount 按 AK 查账号并检查停用状态。
+func (a *Authenticator) lookupAccount(ak string) (*account.Account, error) {
+	acct, ok := a.store.GetByAK(ak)
+	if !ok || acct == nil || acct.Disabled {
+		return nil, AccessDenied()
 	}
 	return acct, nil
 }
@@ -186,19 +273,9 @@ func parseAuthorization(header string) (*authComponents, error) {
 		return nil, errors.New("auth: Authorization 缺少必要字段")
 	}
 
-	parts := strings.Split(cred, "/")
-	if len(parts) != 5 {
-		return nil, errors.New("auth: Credential 段数错误")
-	}
-	scope := credentialScope{
-		AccessKey:  parts[0],
-		Date:       parts[1],
-		Region:     parts[2],
-		Service:    parts[3],
-		Terminator: parts[4],
-	}
-	if scope.Service != Service || scope.Terminator != terminator {
-		return nil, errors.New("auth: Credential scope 不受支持")
+	scope, err := parseCredentialScope(cred)
+	if err != nil {
+		return nil, err
 	}
 
 	var headers []string
@@ -210,11 +287,58 @@ func parseAuthorization(header string) (*authComponents, error) {
 	return &authComponents{Scope: scope, SignedHeaders: headers, Signature: signature}, nil
 }
 
-func requestTime(r *http.Request) (time.Time, bool) {
-	if v := r.Header.Get("x-amz-date"); v != "" {
-		if t, err := time.Parse(amzDateFormat, v); err == nil {
-			return t.UTC(), true
+// parseCredentialScope 解析五段式 Credential：AK/date/region/service/aws4_request。
+func parseCredentialScope(cred string) (credentialScope, error) {
+	parts := strings.Split(cred, "/")
+	if len(parts) != 5 {
+		return credentialScope{}, errors.New("auth: Credential 段数错误")
+	}
+	scope := credentialScope{
+		AccessKey:  parts[0],
+		Date:       parts[1],
+		Region:     parts[2],
+		Service:    parts[3],
+		Terminator: parts[4],
+	}
+	if scope.Service != Service || scope.Terminator != terminator {
+		return credentialScope{}, errors.New("auth: Credential scope 不受支持")
+	}
+	return scope, nil
+}
+
+// parseQueryComponents 从预签名 query 中解析出与头签名同构的组件。
+func parseQueryComponents(q url.Values) (*authComponents, error) {
+	scope, err := parseCredentialScope(q.Get("X-Amz-Credential"))
+	if err != nil {
+		return nil, err
+	}
+	signature := q.Get("X-Amz-Signature")
+	if signature == "" {
+		return nil, errors.New("auth: 缺少 X-Amz-Signature")
+	}
+	var headers []string
+	for _, h := range strings.Split(strings.ToLower(q.Get("X-Amz-SignedHeaders")), ";") {
+		if h = strings.TrimSpace(h); h != "" {
+			headers = append(headers, h)
 		}
+	}
+	return &authComponents{Scope: scope, SignedHeaders: headers, Signature: signature}, nil
+}
+
+func parseAmzDate(v string) (time.Time, bool) {
+	if v == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(amzDateFormat, v)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t.UTC(), true
+}
+
+func requestTime(r *http.Request) (time.Time, bool) {
+	if t, ok := parseAmzDate(r.Header.Get("x-amz-date")); ok {
+		return t, true
 	}
 	if v := r.Header.Get("Date"); v != "" {
 		if t, err := http.ParseTime(v); err == nil {
@@ -222,6 +346,52 @@ func requestTime(r *http.Request) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// verifyPresign 用 v4 signer 的 PresignHTTP 以账号明文 SK 重算预签名，
+// 再与请求携带的 X-Amz-Signature 做常量时间比对。
+func verifyPresign(r *http.Request, acct *account.Account, comp *authComponents, t time.Time) (bool, error) {
+	r2 := r.Clone(r.Context())
+	r2.Header = make(http.Header, len(comp.SignedHeaders))
+	hasContentLength := false
+	for _, h := range comp.SignedHeaders {
+		switch h {
+		case "host":
+			continue
+		case "content-length":
+			hasContentLength = true
+			continue
+		}
+		if vals, ok := r.Header[textproto.CanonicalMIMEHeaderKey(h)]; ok {
+			r2.Header[textproto.CanonicalMIMEHeaderKey(h)] = append([]string(nil), vals...)
+		}
+	}
+	if hasContentLength {
+		r2.ContentLength = r.ContentLength
+	} else {
+		r2.ContentLength = 0
+	}
+	r2.Host = r.Host
+
+	// 去掉请求携带的签名，交给 signer 重新生成完整签名 URL。
+	u := *r.URL
+	q := u.Query()
+	q.Del("X-Amz-Signature")
+	u.RawQuery = q.Encode()
+	r2.URL = &u
+
+	signer := v4.NewSigner(func(o *v4.SignerOptions) { o.DisableURIPathEscaping = true })
+	creds := aws.Credentials{AccessKeyID: acct.AK, SecretAccessKey: acct.SK}
+	signedURI, _, err := signer.PresignHTTP(r.Context(), creds, r2, UnsignedPayload, Service, comp.Scope.Region, t)
+	if err != nil {
+		return false, err
+	}
+	parsed, err := url.Parse(signedURI)
+	if err != nil {
+		return false, err
+	}
+	got := parsed.Query().Get("X-Amz-Signature")
+	return subtle.ConstantTimeCompare([]byte(got), []byte(comp.Signature)) == 1, nil
 }
 
 // recomputeSignature 仅用请求声明的 SignedHeaders 重建规范请求并重算签名。
@@ -286,6 +456,19 @@ func AccountFromContext(ctx context.Context) (*account.Account, bool) {
 	return acct, ok
 }
 
+type requestIDCtxKey struct{}
+
+// WithRequestID 把本次请求的 request id 写入 context，供错误响应复用。
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDCtxKey{}, id)
+}
+
+// RequestIDFromContext 取回本次请求的 request id。
+func RequestIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDCtxKey{}).(string)
+	return id
+}
+
 // ---- 错误响应 ----
 
 // MaskAuthorization 对 Authorization 头脱敏：只保留 AK 与签名前 8 位。
@@ -312,7 +495,10 @@ type errorXML struct {
 }
 
 // WriteError 把认证/校验错误写成 S3 XML 响应。
-// 输出不含随机字段，保证“跨账号访问”与“桶不存在”的响应逐字节一致。
+//
+// 有意保持响应体不含随机字段（RequestId/Resource 不写入 body），
+// 以延续 M0 的“跨账号访问”与“桶不存在”响应逐字节一致、不泄露存在性的保证；
+// request id 仍通过 x-amz-request-id 响应头给出。
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	code := CodeAccessDenied
 	message := "Access Denied"
@@ -324,7 +510,11 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		status = ae.Status
 	}
 
+	w.Header().Set("Server", "objbox")
 	w.Header().Set("Content-Type", "application/xml")
+	if id := RequestIDFromContext(r.Context()); id != "" {
+		w.Header().Set("x-amz-request-id", id)
+	}
 	w.WriteHeader(status)
 	if r.Method == http.MethodHead {
 		return
