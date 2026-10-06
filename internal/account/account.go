@@ -452,6 +452,34 @@ func (s *Store) SetQuota(name string, quotaBytes int64) error {
 	return nil
 }
 
+// Update 同时修改账号备注与配额（nil 表示该项不改），一次原子落盘。
+//
+// 管理面与 CLI 共用同一套读写逻辑：调用方无需自己拼写 JSON，
+// 修改在写锁内基于当前内存表完成，多个并发请求不会互相覆盖。
+func (s *Store) Update(name string, note *string, quotaBytes *int64) (*Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.findLocked(name)
+	if !ok {
+		return nil, fmt.Errorf("account: 账号 %q 不存在", name)
+	}
+
+	na := a.Clone()
+	if note != nil {
+		na.Note = *note
+	}
+	if quotaBytes != nil {
+		na.QuotaBytes = *quotaBytes
+	}
+	s.replaceLocked(a, na)
+	if err := s.saveLocked(); err != nil {
+		s.replaceLocked(na, a)
+		return nil, err
+	}
+	s.refreshSigLocked()
+	return na.Clone(), nil
+}
+
 // Remove 从账号表移除账号（不删除其 root 数据目录，避免误删）。
 func (s *Store) Remove(name string) error {
 	s.mu.Lock()
