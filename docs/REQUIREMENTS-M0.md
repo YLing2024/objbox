@@ -78,6 +78,10 @@ Makefile
 - **AK 生成规则**：`AK` 前缀 + 大写 base32 随机（总长 32～40）；SK：32 字节随机 base64url 或 base32。
 - **SK 只在生成/轮换时打印一次到 stdout**，之后仅存于 `accounts.json`（0600）。
   *（原因：S3 签名校验必须拿到明文 SK 才能重算 HMAC 链，无法只存哈希 —— 这是本项目已知且接受的取舍。）*
+- **运行期热重载**：`serve` 处理请求前会检查 `accounts.json` 的 `mtime+size`（默认最多每秒一次，可用 `SetReloadInterval` 调节），发现变化就重新解析并**原子替换**内存账号表。
+  - 效果：服务运行中用 CLI 执行 `account add / rotate / disable / enable / remove` 后，**下一次请求**即生效——新 SK 立即可用、旧 SK 立即失效、停用/删除的账号立即被拒。
+  - 容错：解析失败或文件半写时**保留旧表**并记一条日志，绝不清空账号表、绝不退化成「所有请求 403」；`accounts.json` 被删除时同样保留旧表。
+  - 并发：已发布的账号对象不可变（写路径 copy-on-write），读路径无数据竞争，`go test -race` 通过。
 
 ### 3.2 CLI（标准库 `flag`，手写子命令，不引 cobra）
 ```
