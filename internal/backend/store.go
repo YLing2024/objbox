@@ -2,6 +2,7 @@ package backend
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -63,9 +64,15 @@ type metaStore struct {
 }
 
 // openMetaStore 打开（或创建）元数据文件，并确保根 bucket 存在。
-func openMetaStore(path string) (*metaStore, error) {
+//
+// dataDir 仅用于在元数据库被其它进程锁定时给出可读的错误信息。
+func openMetaStore(path, dataDir string) (*metaStore, error) {
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 3 * time.Second})
 	if err != nil {
+		// bbolt 在超时未拿到文件锁时返回 ErrTimeout；归一为“目录已被占用”。
+		if errors.Is(err, bolt.ErrTimeout) {
+			return nil, fmt.Errorf("backend: 数据目录 %s 已被另一个 objbox 进程占用（元数据库被锁定）", dataDir)
+		}
 		return nil, fmt.Errorf("backend: 打开元数据库失败: %w", err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {

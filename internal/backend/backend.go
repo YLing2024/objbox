@@ -62,7 +62,7 @@ func New(root string) (*Backend, error) {
 	if err := os.MkdirAll(filepath.Join(abs, internalDirName), dirMode); err != nil {
 		return nil, fmt.Errorf("backend: 创建内部目录失败: %w", err)
 	}
-	meta, err := openMetaStore(filepath.Join(abs, internalDirName, metaDBName))
+	meta, err := openMetaStore(filepath.Join(abs, internalDirName, metaDBName), abs)
 	if err != nil {
 		return nil, err
 	}
