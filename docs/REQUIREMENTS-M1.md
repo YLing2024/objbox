@@ -1,7 +1,7 @@
 # objbox 需求书 · M1（协议完整 + 预签名）
 
 > 自包含文档。前置：M0 已完成并上线（`/opt/objbox/objbox`，systemd `objbox.service`，数据 `/data/objbox`，
-> 监听 `127.0.0.1:18930`，nginx `s3.s3.example.com`）。M0 已有的能力**不要回退**：
+> 监听 `127.0.0.1:18930`，nginx 反代域名以 `s3.example.com` 占位）。M0 已有的能力**不要回退**：
 > 账号/CLI/热重载/SigV4 header 校验/路径隔离/只读与停用/Bucket CRUD/Object CRUD/ListObjects V1&V2/Range 单区间/
 > 磁盘为准的桶发现/`BucketNotEmpty` 语义。
 > Python/Go 之外不要新增运行时依赖；**不得新增数据库或中间件**。
