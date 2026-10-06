@@ -133,7 +133,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.admin.ResetFailures(ip)
-	s.admin.SetSessionCookie(w, "admin")
+	s.admin.SetSessionCookie(w, r, "admin")
 	s.admin.Audit("login", "admin", r)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": "admin"})
 }
@@ -143,7 +143,12 @@ func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request, user string
 		writeJSONError(w, http.StatusMethodNotAllowed, "仅支持 POST")
 		return
 	}
-	s.admin.ClearSessionCookie(w)
+	// 提升会话版本号：登出后旧 cookie 即使未过期也立即失效。
+	if err := s.admin.InvalidateSessions(); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "退出失败")
+		return
+	}
+	s.admin.ClearSessionCookie(w, r)
 	s.admin.Audit("logout", user, r)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

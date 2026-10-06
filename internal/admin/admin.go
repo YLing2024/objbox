@@ -77,6 +77,11 @@ type Service struct {
 	hash   []byte
 	secret []byte
 
+	// epoch 是会话版本号：登录时写入签发值，校验时要求与当前值相等；
+	// logout 时 +1 并原子落盘，使所有既有会话立即失效。
+	epochMu sync.Mutex
+	epoch   int64
+
 	passwordPath string
 	hashPath     string
 	secretPath   string
@@ -85,6 +90,12 @@ type Service struct {
 	rl   map[string]*attempt
 
 	audit *auditLog
+}
+
+// adminState 是 <data>/admin.json 的磁盘结构。
+type adminState struct {
+	PasswordHash string `json:"passwordHash"`
+	SessionEpoch int64  `json:"sessionEpoch"`
 }
 
 type attempt struct {
@@ -134,17 +145,16 @@ func (s *Service) DataDir() string { return s.dataDir }
 // PasswordFilePath 返回 builtin 口令明文文件路径（供部署方查看）。
 func (s *Service) PasswordFilePath() string { return s.passwordPath }
 
-// loadOrCreatePassword 加载 bcrypt 哈希；不存在时生成随机口令并同时落盘明文与哈希。
+// loadOrCreatePassword 加载 bcrypt 哈希与会话版本号；不存在时生成随机口令并同时落盘明文与哈希。
 func (s *Service) loadOrCreatePassword() error {
 	raw, err := os.ReadFile(s.hashPath)
 	if err == nil {
-		var f struct {
-			PasswordHash string `json:"passwordHash"`
-		}
+		var f adminState
 		if uerr := json.Unmarshal(raw, &f); uerr != nil || f.PasswordHash == "" {
 			return fmt.Errorf("admin: 解析 %s 失败: %w", s.hashPath, uerr)
 		}
 		s.hash = []byte(f.PasswordHash)
+		s.epoch = f.SessionEpoch
 		return nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -162,17 +172,31 @@ func (s *Service) loadOrCreatePassword() error {
 	if err := writeFile0600(s.passwordPath, []byte(pw+"\n")); err != nil {
 		return err
 	}
-	blob, err := json.MarshalIndent(struct {
-		PasswordHash string `json:"passwordHash"`
-	}{PasswordHash: string(h)}, "", "  ")
-	if err != nil {
-		return fmt.Errorf("admin: 序列化口令哈希失败: %w", err)
-	}
-	if err := writeFile0600(s.hashPath, append(blob, '\n')); err != nil {
-		return err
-	}
 	s.hash = h
-	return nil
+	s.epoch = 0
+	return s.saveAdminState()
+}
+
+// saveAdminState 原子写回口令哈希与会话版本号（0600）。
+func (s *Service) saveAdminState() error {
+	blob, err := json.MarshalIndent(adminState{
+		PasswordHash: string(s.hash),
+		SessionEpoch: s.epoch,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("admin: 序列化管理状态失败: %w", err)
+	}
+	return writeFile0600(s.hashPath, append(blob, '\n'))
+}
+
+// InvalidateSessions 递增会话版本号并原子落盘，使所有既有会话立即失效。
+//
+// builtin 模式为单管理员场景，登出即使全部会话失效是可接受的。
+func (s *Service) InvalidateSessions() error {
+	s.epochMu.Lock()
+	defer s.epochMu.Unlock()
+	s.epoch++
+	return s.saveAdminState()
 }
 
 // loadOrCreateSecret 加载会话签名密钥；不存在或过短时生成 32 字节随机密钥。
@@ -269,13 +293,17 @@ func (s *Service) Authenticate(r *http.Request) (string, bool) {
 }
 
 // SetSessionCookie 写入已签名的会话 cookie。
-func (s *Service) SetSessionCookie(w http.ResponseWriter, user string) {
+//
+// 请求来自 HTTPS（TLS 或 X-Forwarded-Proto: https）时附带 Secure，
+// 本地 http 调试则不设，避免登录后无法保持会话。
+func (s *Service) SetSessionCookie(w http.ResponseWriter, r *http.Request, user string) {
 	exp := s.now().Add(SessionTTL)
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    s.signSession(user, exp),
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  exp,
 		MaxAge:   int(SessionTTL.Seconds()),
@@ -283,19 +311,36 @@ func (s *Service) SetSessionCookie(w http.ResponseWriter, user string) {
 }
 
 // ClearSessionCookie 让会话 cookie 立即过期。
-func (s *Service) ClearSessionCookie(w http.ResponseWriter) {
+func (s *Service) ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 }
 
+// requestIsHTTPS 判断请求是否来自 HTTPS：TLS 直连，或网关转发的
+// X-Forwarded-Proto 为 https。
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	p := r.Header.Get("X-Forwarded-Proto")
+	if p == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(strings.Split(p, ",")[0]), "https")
+}
+
 func (s *Service) signSession(user string, exp time.Time) string {
-	payload := user + "|" + strconv.FormatInt(exp.Unix(), 10)
+	s.epochMu.Lock()
+	epoch := s.epoch
+	s.epochMu.Unlock()
+	payload := user + "|" + strconv.FormatInt(exp.Unix(), 10) + "|" + strconv.FormatInt(epoch, 10)
 	mac := hmac.New(sha256.New, s.secret)
 	mac.Write([]byte(payload))
 	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." +
@@ -320,12 +365,23 @@ func (s *Service) verifySession(token string) (string, bool) {
 	if subtle.ConstantTimeCompare(sig, mac.Sum(nil)) != 1 {
 		return "", false
 	}
-	parts := strings.SplitN(string(payload), "|", 2)
-	if len(parts) != 2 || parts[0] == "" {
+	parts := strings.SplitN(string(payload), "|", 3)
+	if len(parts) != 3 || parts[0] == "" {
 		return "", false
 	}
 	exp, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
+		return "", false
+	}
+	epoch, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return "", false
+	}
+	s.epochMu.Lock()
+	cur := s.epoch
+	s.epochMu.Unlock()
+	if epoch != cur {
+		// 已登出（或版本号被提升）：旧会话立即失效。
 		return "", false
 	}
 	if !s.now().Before(time.Unix(exp, 0)) {
