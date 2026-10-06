@@ -59,7 +59,7 @@ func (s *Server) serveAdminIndex(w http.ResponseWriter, r *http.Request) {
 	if s.admin != nil {
 		mode = s.admin.AuthMode()
 	}
-	html := strings.ReplaceAll(string(data), "__OBJBOX_AUTH_MODE__", mode)
+	html := strings.ReplaceAll(string(data), "__OBJBOX_AUTH_MODE_VALUE__", mode)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Content-Length", strconv.Itoa(len(html)))

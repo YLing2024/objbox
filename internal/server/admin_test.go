@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,6 +154,66 @@ func TestAdminBuiltinAuthFlow(t *testing.T) {
 	resp, _ = doJSON(t, client, http.MethodGet, ts.URL+"/api/admin/accounts", nil)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("退出后应 401，实际 %d", resp.StatusCode)
+	}
+}
+
+// §5b.4：登出必须服务端失效：旧 cookie 即使未过期也不能再通过校验。
+func TestAdminLogoutInvalidatesOldCookie(t *testing.T) {
+	ts, _, dataDir := newAdminTestServer(t, "builtin")
+	client := newCookieClient(t)
+	loginBuiltin(t, ts, dataDir, client)
+
+	u, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var session string
+	for _, c := range client.Jar.Cookies(u) {
+		if c.Name == adminauth.CookieName {
+			session = c.Value
+		}
+	}
+	if session == "" {
+		t.Fatal("登录后应拿到会话 cookie")
+	}
+
+	withOldCookie := func() int {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/admin/overview", nil)
+		req.AddCookie(&http.Cookie{Name: adminauth.CookieName, Value: session})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := withOldCookie(); code != http.StatusOK {
+		t.Fatalf("登出前旧 cookie 应 200，实际 %d", code)
+	}
+	if resp, _ := doJSON(t, client, http.MethodPost, ts.URL+"/api/admin/logout", map[string]string{}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("退出应 200，实际 %d", resp.StatusCode)
+	}
+	if code := withOldCookie(); code != http.StatusUnauthorized {
+		t.Fatalf("登出后同一 cookie 必须 401，实际 %d", code)
+	}
+}
+
+// §5b.6：sso 模式下注入的取值必须是 sso，前端据此渲染未认证视图。
+func TestAdminIndexInjectsSSOMode(t *testing.T) {
+	ts, _, _ := newAdminTestServer(t, "sso")
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/", nil)
+	req.Header.Set("Accept", "text/html")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	html := string(body)
+	if !strings.Contains(html, "window.__OBJBOX_AUTH_MODE__ = 'sso'") {
+		t.Fatalf("sso 模式应注入 window.__OBJBOX_AUTH_MODE__ = 'sso'：%s", html)
 	}
 }
 
@@ -408,11 +469,15 @@ func TestAdminStaticResources(t *testing.T) {
 	if !strings.Contains(html, "<html") || !strings.Contains(html, "objbox") {
 		t.Fatalf("/ 应返回管理页 HTML，实际：%s", html)
 	}
-	if strings.Contains(html, "__OBJBOX_AUTH_MODE__") {
+	if strings.Contains(html, "__OBJBOX_AUTH_MODE_VALUE__") {
 		t.Fatalf("AUTH_MODE 占位符未被替换：%s", html)
 	}
 	if !strings.Contains(html, "builtin") {
 		t.Fatalf("页面应注入 builtin 模式：%s", html)
+	}
+	// §5b.6：注入变量名与取值必须与前端读取的一致。
+	if !strings.Contains(html, "window.__OBJBOX_AUTH_MODE__ = 'builtin'") {
+		t.Fatalf("页面应注入 window.__OBJBOX_AUTH_MODE__ = 'builtin'：%s", html)
 	}
 
 	// 找一个真实资源并取回。
