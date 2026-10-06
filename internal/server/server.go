@@ -6,6 +6,7 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,9 @@ import (
 // Server 是本项目的 S3 HTTP 入口。
 type Server struct {
 	auth *auth.Authenticator
+
+	// AccessLog 为 true 时打印访问日志；Authorization 一律脱敏。
+	AccessLog bool
 
 	mu       sync.Mutex
 	handlers map[string]http.Handler
@@ -85,6 +89,9 @@ func (s *Server) handlerFor(a *account.Account) (http.Handler, error) {
 
 // ServeHTTP 实现 http.Handler。
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.AccessLog {
+		log.Printf("%s %s auth=%s", r.Method, r.URL.Path, auth.MaskAuthorization(r.Header.Get("Authorization")))
+	}
 	acct, err := s.auth.Authenticate(r)
 	if err != nil {
 		auth.WriteError(w, r, err)

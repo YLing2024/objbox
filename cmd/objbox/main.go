@@ -70,6 +70,7 @@ func runServe(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", defaultAddr, "监听地址")
 	dataDir := fs.String("data", defaultDataDir, "数据目录")
+	accessLog := fs.Bool("access-log", false, "打印访问日志（Authorization 已脱敏）")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -89,6 +90,7 @@ func runServe(args []string) int {
 		return 1
 	}
 	defer srv.Close()
+	srv.AccessLog = *accessLog
 
 	httpSrv := &http.Server{
 		Addr:              *addr,

@@ -288,6 +288,23 @@ func AccountFromContext(ctx context.Context) (*account.Account, bool) {
 
 // ---- 错误响应 ----
 
+// MaskAuthorization 对 Authorization 头脱敏：只保留 AK 与签名前 8 位。
+// 完整头永不落日志。
+func MaskAuthorization(header string) string {
+	if header == "" {
+		return ""
+	}
+	comp, err := parseAuthorization(header)
+	if err != nil {
+		return Algorithm + " <malformed>"
+	}
+	sig := comp.Signature
+	if len(sig) > 8 {
+		sig = sig[:8]
+	}
+	return Algorithm + " Credential=" + comp.Scope.AccessKey + "/..., Signature=" + sig + "..."
+}
+
 type errorXML struct {
 	XMLName xml.Name `xml:"Error"`
 	Code    string   `xml:"Code"`
@@ -295,7 +312,6 @@ type errorXML struct {
 }
 
 // WriteError 把认证/校验错误写成 S3 XML 响应。
-//
 // 输出不含随机字段，保证“跨账号访问”与“桶不存在”的响应逐字节一致。
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	code := CodeAccessDenied

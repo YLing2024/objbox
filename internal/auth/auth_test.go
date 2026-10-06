@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,5 +185,27 @@ func TestWriteErrorIsDeterministic(t *testing.T) {
 	a, b := render(), render()
 	if a != b {
 		t.Fatalf("AccessDenied 响应应逐字节一致:\n%q\n%q", a, b)
+	}
+}
+
+func TestMaskAuthorization(t *testing.T) {
+	f := newFixture(t)
+	r := signRequest(t, http.MethodGet, "http://example.com/bucket/key", nil, f.writable, time.Now())
+	masked := MaskAuthorization(r.Header.Get("Authorization"))
+	if masked == "" {
+		t.Fatal("掩码结果不应为空")
+	}
+	if strings.Contains(masked, f.writable.SK) {
+		t.Fatal("掩码结果绝不能包含 SK")
+	}
+	if !strings.Contains(masked, f.writable.AK) {
+		t.Fatalf("掩码结果应保留 AK: %q", masked)
+	}
+	if got := strings.Count(masked, "Signature="); got != 1 {
+		t.Fatalf("掩码应保留一个 Signature=: %q", masked)
+	}
+	// 完整签名有 64 位十六进制，掩码后只应剩前 8 位加省略号。
+	if strings.Contains(masked, r.Header.Get("Authorization")) {
+		t.Fatal("掩码结果不应等于完整头")
 	}
 }

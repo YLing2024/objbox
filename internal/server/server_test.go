@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -196,5 +197,39 @@ func TestAnonymousRejectedWhenAccountsExist(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("匿名请求应 403，实际 %d", resp.StatusCode)
+	}
+}
+
+func TestAccessLogMasksAuthorization(t *testing.T) {
+	store, err := account.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice, err := store.Add("alice", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.AccessLog = true
+	ts := httptest.NewServer(srv)
+	t.Cleanup(func() { ts.Close(); srv.Close() })
+
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	resp := signedDo(t, ts, http.MethodGet, "/", nil, alice, nil)
+	resp.Body.Close()
+
+	out := buf.String()
+	if strings.Contains(out, alice.SK) {
+		t.Fatalf("访问日志绝不能包含 SK: %q", out)
+	}
+	if !strings.Contains(out, alice.AK) {
+		t.Fatalf("访问日志应保留 AK: %q", out)
 	}
 }
