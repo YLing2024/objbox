@@ -47,8 +47,15 @@ const (
 	DefaultReloadInterval = time.Second
 )
 
-// nameRe 限制账号名，避免路径分隔符等危险字符。
+// nameRe 在加载账号表时放宽校验，避免历史文件中出现的大写/点号名字导致服务无法启动。
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// NameRe 是新建账号名的严格规则：小写字母或数字开头，后接小写字母/数字/连字符，
+// 总长 1-32，且不得以 '-' 开头。CLI 与管理面统一使用该规则。
+var NameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// ValidName 判断账号名是否符合新建规则。
+func ValidName(name string) bool { return NameRe.MatchString(name) }
 
 // Account 是一个账号。一个账号对应一套 AK/SK 与一个隔离根目录。
 type Account struct {
@@ -343,8 +350,8 @@ func (s *Store) refreshSigLocked() {
 
 // Add 新建账号并落盘。返回的 SK 仅在此刻可见，调用方应只打印一次。
 func (s *Store) Add(name, note string, readonly bool) (*Account, error) {
-	if !nameRe.MatchString(name) {
-		return nil, fmt.Errorf("account: 非法账号名 %q（只允许字母数字 . _ -，长度 1-64）", name)
+	if !ValidName(name) {
+		return nil, fmt.Errorf("account: 非法账号名 %q（须匹配 %s）", name, NameRe.String())
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

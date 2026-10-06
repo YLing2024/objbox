@@ -3,12 +3,12 @@
 // 子命令：
 //
 //	objbox serve   -addr 127.0.0.1:18930 -data /var/lib/objbox
-//	objbox account add <name> [-note "..."] [-readonly]
-//	objbox account list [-show-secret]
-//	objbox account rotate <name>
-//	objbox account disable|enable <name>
-//	objbox account remove <name>
-//	objbox account quota <name> <bytes>
+//	objbox account add <name> [-note "..."] [-readonly] [-data DIR]
+//	objbox account list [-show-secret] [-data DIR]
+//	objbox account rotate <name> [-data DIR]
+//	objbox account disable|enable <name> [-data DIR]
+//	objbox account remove <name> [-data DIR]
+//	objbox account quota <name> <bytes> [-data DIR]
 //	objbox presign -account <name> -bucket <b> -key <k> [-method GET|PUT] [-expires 3600]
 package main
 
@@ -16,6 +16,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -34,38 +35,53 @@ import (
 )
 
 const (
-	defaultAddr    = "127.0.0.1:18930"
-	defaultDataDir = "/var/lib/objbox"
+	defaultAddr = "127.0.0.1:18930"
 
 	// 连接信息占位，M0 不接真实域名。
 	placeholderEndpoint = "https://s3.example.com"
 	placeholderRegion   = "us-east-1"
 )
 
+// defaultDataDir 是未显式指定 -data 时使用的数据目录。
+// 声明为变量以便测试覆盖，避免测试真的写入 /var/lib/objbox。
+var defaultDataDir = "/var/lib/objbox"
+
+const (
+	// accountAddUsage 是 account add 的确切用法；账号名不合法时原样提示。
+	accountAddUsage = "用法: objbox account add <name> [-note ...] [-readonly] [-data DIR]\n"
+	// nameRuleText 与 account.NameRe 对应。
+	nameRuleText = "账号名须为小写字母或数字开头，后接小写字母/数字/连字符，长度 1-32（不得以 - 开头）"
+)
+
 func main() {
-	if len(os.Args) < 2 {
-		usageText()
-		os.Exit(2)
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run 是可测试的入口：参数与输出流显式传入，便于单测而无需 os.Exit。
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		usageText(stderr)
+		return 2
 	}
-	switch os.Args[1] {
+	switch args[0] {
 	case "serve":
-		os.Exit(runServe(os.Args[2:]))
+		return runServe(args[1:])
 	case "account":
-		os.Exit(runAccount(os.Args[2:]))
+		return runAccount(args[1:], stdout, stderr)
 	case "presign":
-		os.Exit(runPresign(os.Args[2:]))
+		return runPresign(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		usageText()
-		os.Exit(0)
+		usageText(stdout)
+		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "未知子命令: %s\n", os.Args[1])
-		usageText()
-		os.Exit(2)
+		fmt.Fprintf(stderr, "未知子命令: %s\n", args[0])
+		usageText(stderr)
+		return 2
 	}
 }
 
-func usageText() {
-	fmt.Fprint(os.Stderr, `objbox - 极简自建 S3 兼容对象存储
+func usageText(w io.Writer) {
+	fmt.Fprint(w, `objbox - 极简自建 S3 兼容对象存储
 
 用法:
   objbox serve   -addr 127.0.0.1:18930 -data /var/lib/objbox
@@ -119,14 +135,15 @@ func runServe(args []string) int {
 	return 0
 }
 
-func runAccount(args []string) int {
+func runAccount(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
-		usageText()
+		usageText(stderr)
 		return 2
 	}
 	sub, rest := args[0], args[1:]
 
 	fs := flag.NewFlagSet("account "+sub, flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	dataDir := fs.String("data", defaultDataDir, "数据目录")
 
 	switch sub {
@@ -134,97 +151,136 @@ func runAccount(args []string) int {
 		note := fs.String("note", "", "备注")
 		readonly := fs.Bool("readonly", false, "只读账号")
 		if len(rest) < 1 {
-			fmt.Fprintln(os.Stderr, "用法: objbox account add <name> [-note ...] [-readonly] [-data DIR]")
+			fmt.Fprint(stderr, accountAddUsage)
 			return 2
 		}
+		// 注意：flag 包只解析名字之后的旗标，因此 -data 必须写在名字之后。
 		name := rest[0]
 		if err := fs.Parse(rest[1:]); err != nil {
 			return 2
 		}
-		return accountAdd(*dataDir, name, *note, *readonly)
+		if !account.ValidName(name) {
+			fmt.Fprintf(stderr, "账号名 %q 不合法：%s\n", name, nameRuleText)
+			fmt.Fprint(stderr, accountAddUsage)
+			return 2
+		}
+		warnDefaultDataDir(stderr, *dataDir, flagWasSet(fs, "data"))
+		return accountAdd(stdout, stderr, *dataDir, name, *note, *readonly)
 
 	case "list":
 		showSecret := fs.Bool("show-secret", false, "显示完整 SK")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
-		return accountList(*dataDir, *showSecret)
+		warnDefaultDataDir(stderr, *dataDir, flagWasSet(fs, "data"))
+		return accountList(stdout, stderr, *dataDir, *showSecret)
 
 	case "quota":
 		if len(rest) < 2 {
-			fmt.Fprintln(os.Stderr, "用法: objbox account quota <name> <bytes> [-data DIR]")
+			fmt.Fprintln(stderr, "用法: objbox account quota <name> <bytes> [-data DIR]")
 			return 2
 		}
 		name, rawBytes := rest[0], rest[1]
 		if err := fs.Parse(rest[2:]); err != nil {
 			return 2
 		}
-		quota, err := strconv.ParseInt(rawBytes, 10, 64)
-		if err != nil || quota < 0 {
-			fmt.Fprintln(os.Stderr, "bytes 必须是非负整数")
+		if !account.ValidName(name) {
+			fmt.Fprintf(stderr, "账号名 %q 不合法：%s\n", name, nameRuleText)
 			return 2
 		}
-		return accountQuota(*dataDir, name, quota)
+		quota, err := strconv.ParseInt(rawBytes, 10, 64)
+		if err != nil || quota < 0 {
+			fmt.Fprintln(stderr, "bytes 必须是非负整数")
+			return 2
+		}
+		warnDefaultDataDir(stderr, *dataDir, flagWasSet(fs, "data"))
+		return accountQuota(stdout, stderr, *dataDir, name, quota)
 
 	case "rotate", "disable", "enable", "remove":
 		if len(rest) < 1 {
-			fmt.Fprintf(os.Stderr, "用法: objbox account %s <name> [-data DIR]\n", sub)
+			fmt.Fprintf(stderr, "用法: objbox account %s <name> [-data DIR]\n", sub)
 			return 2
 		}
 		name := rest[0]
 		if err := fs.Parse(rest[1:]); err != nil {
 			return 2
 		}
-		return accountMutate(*dataDir, sub, name)
+		if !account.ValidName(name) {
+			fmt.Fprintf(stderr, "账号名 %q 不合法：%s\n", name, nameRuleText)
+			return 2
+		}
+		warnDefaultDataDir(stderr, *dataDir, flagWasSet(fs, "data"))
+		return accountMutate(stdout, stderr, *dataDir, sub, name)
 
 	default:
-		fmt.Fprintf(os.Stderr, "未知 account 子命令: %s\n", sub)
-		usageText()
+		fmt.Fprintf(stderr, "未知 account 子命令: %s\n", sub)
+		usageText(stderr)
 		return 2
 	}
 }
 
-func loadStore(dataDir string) (*account.Store, int) {
+// flagWasSet 报告指定旗标是否被显式设置（用于区分默认值与用户显式传入）。
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+// warnDefaultDataDir 在未显式指定 -data 时提示正在使用默认数据目录，
+// 避免用户误以为写到了自己期望的目录（M4 §5.3）。
+func warnDefaultDataDir(w io.Writer, dataDir string, explicitlySet bool) {
+	if explicitlySet {
+		return
+	}
+	fmt.Fprintf(w, "提示: 正在使用默认数据目录 %s\n", dataDir)
+}
+
+func loadStore(stderr io.Writer, dataDir string) (*account.Store, int) {
 	store, err := account.Load(dataDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "加载账号表失败: %v\n", err)
+		fmt.Fprintf(stderr, "加载账号表失败: %v\n", err)
 		return nil, 1
 	}
 	return store, 0
 }
 
-func accountAdd(dataDir, name, note string, readonly bool) int {
-	store, code := loadStore(dataDir)
+func accountAdd(stdout, stderr io.Writer, dataDir, name, note string, readonly bool) int {
+	store, code := loadStore(stderr, dataDir)
 	if store == nil {
 		return code
 	}
 	a, err := store.Add(name, note, readonly)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
+		fmt.Fprintf(stderr, "%v\n", err)
 		return 1
 	}
-	fmt.Printf("name:     %s\n", a.Name)
-	fmt.Printf("AK:       %s\n", a.AK)
-	fmt.Printf("SK:       %s   （仅本次显示，请立即妥善保存）\n", a.SK)
-	fmt.Printf("root:     %s\n", a.Root)
-	fmt.Printf("readonly: %v\n", a.Readonly)
+	fmt.Fprintf(stdout, "name:     %s\n", a.Name)
+	fmt.Fprintf(stdout, "AK:       %s\n", a.AK)
+	fmt.Fprintf(stdout, "SK:       %s   （仅本次显示，请立即妥善保存）\n", a.SK)
+	fmt.Fprintf(stdout, "root:     %s\n", a.Root)
+	fmt.Fprintf(stdout, "data:     %s\n", store.DataDir())
+	fmt.Fprintf(stdout, "readonly: %v\n", a.Readonly)
 	if a.Note != "" {
-		fmt.Printf("note:     %s\n", a.Note)
+		fmt.Fprintf(stdout, "note:     %s\n", a.Note)
 	}
-	fmt.Println("S3 连接信息（占位）:")
-	fmt.Printf("  Endpoint:  %s\n", placeholderEndpoint)
-	fmt.Printf("  Region:    %s\n", placeholderRegion)
-	fmt.Println("  PathStyle: on")
+	fmt.Fprintln(stdout, "S3 连接信息（占位）:")
+	fmt.Fprintf(stdout, "  Endpoint:  %s\n", placeholderEndpoint)
+	fmt.Fprintf(stdout, "  Region:    %s\n", placeholderRegion)
+	fmt.Fprintln(stdout, "  PathStyle: on")
 	return 0
 }
 
-func accountList(dataDir string, showSecret bool) int {
-	store, code := loadStore(dataDir)
+func accountList(stdout, stderr io.Writer, dataDir string, showSecret bool) int {
+	store, code := loadStore(stderr, dataDir)
 	if store == nil {
 		return code
 	}
 	accounts := store.List()
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tAK\tSK\tROOT\tSTATUS\tREADONLY\tUSAGE(B)")
 	for _, a := range accounts {
 		sk := account.MaskSecret(a.SK)
@@ -246,8 +302,8 @@ func accountList(dataDir string, showSecret bool) int {
 	return 0
 }
 
-func accountMutate(dataDir, sub, name string) int {
-	store, code := loadStore(dataDir)
+func accountMutate(stdout, stderr io.Writer, dataDir, sub, name string) int {
+	store, code := loadStore(stderr, dataDir)
 	if store == nil {
 		return code
 	}
@@ -255,53 +311,54 @@ func accountMutate(dataDir, sub, name string) int {
 	case "rotate":
 		sk, err := store.Rotate(name)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+			fmt.Fprintf(stderr, "%v\n", err)
 			return 1
 		}
-		fmt.Printf("账号 %s 的 SK 已轮换（旧 SK 立即失效）\n", name)
-		fmt.Printf("SK: %s   （仅本次显示，请立即妥善保存）\n", sk)
+		fmt.Fprintf(stdout, "账号 %s 的 SK 已轮换（旧 SK 立即失效）\n", name)
+		fmt.Fprintf(stdout, "SK: %s   （仅本次显示，请立即妥善保存）\n", sk)
 	case "disable":
 		if err := store.SetDisabled(name, true); err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+			fmt.Fprintf(stderr, "%v\n", err)
 			return 1
 		}
-		fmt.Printf("账号 %s 已停用\n", name)
+		fmt.Fprintf(stdout, "账号 %s 已停用\n", name)
 	case "enable":
 		if err := store.SetDisabled(name, false); err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+			fmt.Fprintf(stderr, "%v\n", err)
 			return 1
 		}
-		fmt.Printf("账号 %s 已启用\n", name)
+		fmt.Fprintf(stdout, "账号 %s 已启用\n", name)
 	case "remove":
 		if err := store.Remove(name); err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+			fmt.Fprintf(stderr, "%v\n", err)
 			return 1
 		}
-		fmt.Printf("账号 %s 已从账号表移除（其 root 数据目录保留）\n", name)
+		fmt.Fprintf(stdout, "账号 %s 已从账号表移除（其 root 数据目录保留）\n", name)
 	}
 	return 0
 }
 
-func accountQuota(dataDir, name string, quotaBytes int64) int {
-	store, code := loadStore(dataDir)
+func accountQuota(stdout, stderr io.Writer, dataDir, name string, quotaBytes int64) int {
+	store, code := loadStore(stderr, dataDir)
 	if store == nil {
 		return code
 	}
 	if err := store.SetQuota(name, quotaBytes); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
+		fmt.Fprintf(stderr, "%v\n", err)
 		return 1
 	}
 	if quotaBytes == 0 {
-		fmt.Printf("账号 %s 的配额已清除（不限）\n", name)
+		fmt.Fprintf(stdout, "账号 %s 的配额已清除（不限）\n", name)
 	} else {
-		fmt.Printf("账号 %s 的配额已设为 %d 字节\n", name, quotaBytes)
+		fmt.Fprintf(stdout, "账号 %s 的配额已设为 %d 字节\n", name, quotaBytes)
 	}
 	return 0
 }
 
 // runPresign 生成预签名 URL 并打印，便于手机/浏览器直接下载。
-func runPresign(args []string) int {
+func runPresign(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("presign", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	dataDir := fs.String("data", defaultDataDir, "数据目录")
 	name := fs.String("account", "", "账号名")
 	bucket := fs.String("bucket", "", "桶名")
@@ -314,35 +371,36 @@ func runPresign(args []string) int {
 		return 2
 	}
 	if *name == "" || *bucket == "" || *key == "" {
-		fmt.Fprintln(os.Stderr, "用法: objbox presign -account <name> -bucket <b> -key <k> [-method GET|PUT] [-expires 3600]")
+		fmt.Fprintln(stderr, "用法: objbox presign -account <name> -bucket <b> -key <k> [-method GET|PUT] [-expires 3600]")
 		return 2
 	}
 	m := strings.ToUpper(*method)
 	if m != http.MethodGet && m != http.MethodPut {
-		fmt.Fprintln(os.Stderr, "method 只支持 GET 或 PUT")
+		fmt.Fprintln(stderr, "method 只支持 GET 或 PUT")
 		return 2
 	}
 	if *expires <= 0 || time.Duration(*expires)*time.Second > auth.MaxPresignExpires {
-		fmt.Fprintln(os.Stderr, "expires 必须在 1 到 604800 秒之间")
+		fmt.Fprintln(stderr, "expires 必须在 1 到 604800 秒之间")
 		return 2
 	}
 
-	store, code := loadStore(*dataDir)
+	store, code := loadStore(stderr, *dataDir)
 	if store == nil {
 		return code
 	}
+	warnDefaultDataDir(stderr, *dataDir, flagWasSet(fs, "data"))
 	acct, ok := store.Find(*name)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "账号 %q 不存在\n", *name)
+		fmt.Fprintf(stderr, "账号 %q 不存在\n", *name)
 		return 1
 	}
 
 	signed, err := buildPresignedURL(*endpoint, *region, m, *bucket, *key, *expires, acct)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "生成预签名 URL 失败: %v\n", err)
+		fmt.Fprintf(stderr, "生成预签名 URL 失败: %v\n", err)
 		return 1
 	}
-	fmt.Println(signed)
+	fmt.Fprintln(stdout, signed)
 	return 0
 }
 

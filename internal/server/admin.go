@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/YLing2024/objbox/internal/account"
@@ -14,9 +13,6 @@ import (
 
 // Version 为二进制版本号，出现在管理面 overview 中。
 const Version = "0.3.0"
-
-// adminNameRe 是管理面新建账号时的严格校验：小写字母、数字、连字符，1-32 位。
-var adminNameRe = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
 // adminAccount 是管理面账号列表项；SK 默认掩码，仅在 reveal 时返回明文。
 type adminAccount struct {
@@ -194,8 +190,8 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(body.Name)
-	if !adminNameRe.MatchString(name) {
-		writeJSONError(w, http.StatusBadRequest, "账号名需匹配 [a-z0-9-]{1,32}")
+	if !account.ValidName(name) {
+		writeJSONError(w, http.StatusBadRequest, "账号名需匹配 [a-z0-9][a-z0-9-]{0,31}（不得以 - 开头）")
 		return
 	}
 	acct, err := s.store.Add(name, body.Note, body.Readonly)
