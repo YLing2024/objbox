@@ -8,6 +8,7 @@ require (
 	github.com/aws/smithy-go v1.28.1
 	github.com/johannesboyne/gofakes3 v1.2.0
 	go.etcd.io/bbolt v1.4.0
+	golang.org/x/crypto v0.31.0
 )
 
 require (
@@ -21,7 +22,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.4 // indirect
 	github.com/ryszard/goskiplist v0.0.0-20150312221310-2dfbae5fcf46 // indirect
 	go.shabbyrobe.org/gocovmerge v0.0.0-20230507111327-fa4f82cfbf4d // indirect
-	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/sys v0.29.0 // indirect
 	golang.org/x/tools v0.8.0 // indirect
 )

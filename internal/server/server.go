@@ -18,6 +18,7 @@ import (
 	"os"
 
 	"github.com/YLing2024/objbox/internal/account"
+	adminauth "github.com/YLing2024/objbox/internal/admin"
 	"github.com/YLing2024/objbox/internal/auth"
 	"github.com/YLing2024/objbox/internal/backend"
 	"github.com/YLing2024/objbox/internal/randstr"
@@ -28,6 +29,7 @@ import (
 type Server struct {
 	auth  *auth.Authenticator
 	store *account.Store
+	admin *adminauth.Service
 
 	// AccessLog 为 true 时打印访问日志；Authorization 一律脱敏。
 	AccessLog bool
@@ -48,6 +50,11 @@ func New(store *account.Store) (*Server, error) {
 		handlers: map[string]http.Handler{},
 		backends: map[string]*backend.Backend{},
 	}
+	adm, err := adminauth.New(store.DataDir(), adminauth.ModeFromEnv())
+	if err != nil {
+		return nil, err
+	}
+	s.admin = adm
 	for _, a := range store.List() {
 		if _, _, err := s.accountHandler(a); err != nil {
 			s.Close()
@@ -68,6 +75,12 @@ func (s *Server) Close() error {
 		}
 		delete(s.backends, name)
 		delete(s.handlers, name)
+	}
+	if s.admin != nil {
+		if err := s.admin.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		s.admin = nil
 	}
 	return firstErr
 }
@@ -106,6 +119,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.AccessLog {
 		log.Printf("%s %s auth=%s", r.Method, r.URL.Path, auth.MaskAuthorization(r.Header.Get("Authorization")))
 	}
+
+	// 管理面先于 S3 协议层路由：/api/admin/* 与管理页静态资源。
+	// S3 端点仍完全走下面的 AK/SK 认证，不受 AUTH_MODE 影响。
+	if s.admin != nil {
+		if strings.HasPrefix(r.URL.Path, "/api/admin/") {
+			s.serveAdminAPI(w, r)
+			return
+		}
+		if s.serveAdminStatic(w, r) {
+			return
+		}
+	}
+
 	acct, err := s.auth.Authenticate(r)
 	if err != nil {
 		// 认证/预检错误直接写原始 writer：保持 M0「跨账号与桶不存在响应逐字节一致」。
