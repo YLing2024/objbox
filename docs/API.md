@@ -141,7 +141,7 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/admin/login` | `builtin` 口令登录，设置 `objbox_admin` cookie；`sso` 模式一律 401 |
-| POST | `/api/admin/logout` | 退出并清除 cookie |
+| POST | `/api/admin/logout` | 退出：递增会话版本号使**所有**既有会话立即失效，并清除 cookie |
 | GET | `/api/admin/accounts` | 账号列表（SK 默认掩码）；`?reveal=<name>` 返回该账号明文 SK（需鉴权） |
 | POST | `/api/admin/accounts` | 新建账号，返回一次性 AK/SK 与连接信息（Endpoint 由请求 Host 推导） |
 | POST | `/api/admin/accounts/<name>/rotate` | 轮换 SK，返回一次性新 SK |
@@ -152,6 +152,10 @@
 | GET | `/api/admin/overview` | `{authMode, accounts, totalUsageBytes, version}` |
 
 - 除 `login` 外均需鉴权：`builtin` 校验签名 cookie，`sso` 校验 `X-Auth-User`，未通过返回 401。
+- `builtin` 会话 cookie `objbox_admin` 带 `HttpOnly; SameSite=Lax; Path=/`；请求为 HTTPS
+  （TLS 或 `X-Forwarded-Proto: https`）时另带 `Secure`，本地 http 调试不带。
+- 会话令牌为无状态签名 `base64(user|expiry|epoch).HMAC`；`<data>/admin.json` 记录 `sessionEpoch`，
+  `logout` 递增该值使所有既有会话立即失效（旧 cookie 未过期也不通过校验）。
 - 管理页静态资源：`GET /`（浏览器或带 `Accept: text/html` 的客户端）返回内置 HTML，
   `GET /assets/*` 返回 JS/CSS；带 S3 签名的请求仍按协议层处理。
 - 所有管理 API 调用写入 `<data>/admin-audit.log`（0600，一行一条：时间 / 操作 / 账号 / 来源 IP），不记录明文 SK。
