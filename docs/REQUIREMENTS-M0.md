@@ -125,7 +125,8 @@ objbox account remove <name>
   - `objbox serve` 启动时若 bbolt 里缺少某对象（或文件已消失）→ 以磁盘为准修正（**索引可重建**）
 - 不在 M0 范围（M0 阶段不要实现）：分片上传、批量删、CopyObject、预签名 URL、Web 管理页、Docker、多语言 README。
   - 后续进展：分片上传、批量删除、CopyObject、预签名 URL 已在 **M1** 实现，见 `docs/REQUIREMENTS-M1.md` 与 `docs/API.md`；
-    仍不在范围内的是 Web 管理页、Docker、多语言 README。
+    Web 管理页（`AUTH_MODE` builtin/sso、管理 API、内嵌前端）已在 **M3** 实现，见 `docs/REQUIREMENTS-M3.md` 与 `docs/API.md`；
+    仍不在范围内的是 Docker、多语言 README。
 
 ## 4. 验收标准（Hermes 会独立复核，写清自测命令）
 

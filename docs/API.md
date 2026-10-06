@@ -132,3 +132,27 @@
 | `MethodNotAllowed` | 405 | 方法不支持 |
 | `NotImplemented` | 501 | 该 S3 能力未实现 |
 | `InternalError` | 500 | 服务内部错误 |
+
+## 管理 API（`/api/admin/*`，JSON）
+
+管理面认证由环境变量 `AUTH_MODE` 决定（`builtin` 口令会话 / `sso` 信任 `X-Auth-User`）。
+**这些接口与 S3 协议无关；S3 端点始终走 AK/SK，不受 `AUTH_MODE` 影响。**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/admin/login` | `builtin` 口令登录，设置 `objbox_admin` cookie；`sso` 模式一律 401 |
+| POST | `/api/admin/logout` | 退出并清除 cookie |
+| GET | `/api/admin/accounts` | 账号列表（SK 默认掩码）；`?reveal=<name>` 返回该账号明文 SK（需鉴权） |
+| POST | `/api/admin/accounts` | 新建账号，返回一次性 AK/SK 与连接信息（Endpoint 由请求 Host 推导） |
+| POST | `/api/admin/accounts/<name>/rotate` | 轮换 SK，返回一次性新 SK |
+| POST | `/api/admin/accounts/<name>/disable` | 停用账号 |
+| POST | `/api/admin/accounts/<name>/enable` | 启用账号 |
+| PATCH | `/api/admin/accounts/<name>` | 修改 `note` / `quotaBytes` |
+| DELETE | `/api/admin/accounts/<name>` | 删除账号表条目（数据目录保留） |
+| GET | `/api/admin/overview` | `{authMode, accounts, totalUsageBytes, version}` |
+
+- 除 `login` 外均需鉴权：`builtin` 校验签名 cookie，`sso` 校验 `X-Auth-User`，未通过返回 401。
+- 管理页静态资源：`GET /`（浏览器或带 `Accept: text/html` 的客户端）返回内置 HTML，
+  `GET /assets/*` 返回 JS/CSS；带 S3 签名的请求仍按协议层处理。
+- 所有管理 API 调用写入 `<data>/admin-audit.log`（0600，一行一条：时间 / 操作 / 账号 / 来源 IP），不记录明文 SK。
+- 账号表改动与 CLI 共用同一套原子读写逻辑（临时文件 + rename），服务端热重载立即生效。

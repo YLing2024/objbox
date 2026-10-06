@@ -35,6 +35,28 @@ make build                 # 产出 ./objbox
   -method GET -expires 3600 -endpoint https://s3.example.com
 ```
 
+## 管理页
+
+二进制内置一个 Web 管理页（React + Vite + TS 构建产物用 `//go:embed` 打进单二进制），
+用于查看与管理账号。浏览器访问服务根路径 `/` 即可（例如 `http://127.0.0.1:18930/`）。
+
+管理面认证由环境变量 `AUTH_MODE` 决定，**只作用于管理面**：
+
+- `builtin`（默认）：首次启动生成随机管理员口令，明文写入 `<data>/admin-password.txt`（0600），
+  口令的 bcrypt 哈希存 `<data>/admin.json`；会话 cookie（`objbox_admin`，
+  `HttpOnly; SameSite=Lax; Path=/`，TTL 12 小时）用 `<data>/secret.key`（0600）签名。
+  登录失败按来源 IP 限速：每分钟最多 10 次，超出返回 429。
+- `sso`：不做任何自带登录，管理面只信任网关注入的 `X-Auth-User` 头；**缺失该头一律 401**。
+
+安全边界：
+
+- **S3 协议端点永远走 AK/SK，不受 `AUTH_MODE` 影响**；`AUTH_MODE` 只决定管理页与管理 API 的认证方式。
+- 两种模式下 `/api/admin/*` 都必须鉴权；账号列表默认掩码 SK，只有显式 `?reveal=<name>` 且已鉴权才返回该账号明文 SK。
+- 新建/轮换返回的明文 AK/SK 只显示一次；所有管理操作写入 `<data>/admin-audit.log`（0600），日志不含明文 SK。
+- 管理页只管理账号元数据，不直接读写对象数据；删除账号只移除账号表条目，数据目录保留。
+
+管理 API 一览见 [`docs/API.md`](docs/API.md)。
+
 ## 支持的 S3 操作
 
 服务级：`ListBuckets`
