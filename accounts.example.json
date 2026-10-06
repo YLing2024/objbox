@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "accounts": [
+    {
+      "name": "demo",
+      "ak": "AKEXAMPLE7F3KQ2M9XZ4WTVD6RYH1BN8C5PL",
+      "sk": "SKEXAMPLE32BYTESRANDOMSTRINGVALUE0001",
+      "root": "/var/lib/objbox/roots/demo",
+      "readonly": false,
+      "disabled": false,
+      "quotaBytes": 0,
+      "note": "示例账号"
+    }
+  ]
+}
