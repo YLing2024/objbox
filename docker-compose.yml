@@ -1,0 +1,16 @@
+# objbox 最小 Compose 示例：单服务。
+services:
+  objbox:
+    build: .
+    image: objbox:latest
+    ports:
+      - "18930:18930"
+    environment:
+      # 管理面认证：builtin（自带口令）或 sso（信任网关 X-Auth-User）。
+      # S3 端点始终走 AK/SK，不受该变量影响。
+      AUTH_MODE: builtin
+    volumes:
+      # 数据卷必须持久化：账号表、元数据库与对象内容都在 /data 下，
+      # 容器重建/升级时若不挂载会全部丢失。务必把 /data 映射到宿主机持久目录。
+      - ./data:/data
+    restart: unless-stopped

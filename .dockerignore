@@ -1,0 +1,11 @@
+.git
+.gitignore
+data/
+objbox
+bin/
+*.log
+
+# 前端依赖与本地构建产物（镜像内会重新 npm ci + build）
+web/node_modules/
+web/dist/
+node_modules/
