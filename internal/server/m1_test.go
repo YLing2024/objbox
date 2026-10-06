@@ -280,6 +280,27 @@ func TestRangeInvalidReturns416(t *testing.T) {
 	}
 }
 
+// TestMultiRangeIgnored 多区间 Range 有意只取第一段（不返回多段 body）。
+func TestMultiRangeIgnored(t *testing.T) {
+	ts, _, alice, _ := newTestServer(t)
+	if resp := signedDo(t, ts, http.MethodPut, "/multirange-bucket", nil, alice, nil); resp.StatusCode != http.StatusOK {
+		t.Fatal("建桶失败")
+	} else {
+		resp.Body.Close()
+	}
+	put := signedDo(t, ts, http.MethodPut, "/multirange-bucket/nums", []byte("0123456789"), alice, nil)
+	put.Body.Close()
+
+	resp := signedDo(t, ts, http.MethodGet, "/multirange-bucket/nums", nil, alice, map[string]string{"Range": "bytes=0-1,3-4"})
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("多区间应退化为单区间 206，实际 %d", resp.StatusCode)
+	}
+	if string(body) != "01" {
+		t.Fatalf("多区间只应返回第一段 01，实际 %q", body)
+	}
+}
+
 // TestDeleteMultiHTTP 批量删除：3 个 key（含不存在）→ Deleted 3、无 Error；再 ListObjects 只剩预期。
 func TestDeleteMultiHTTP(t *testing.T) {
 	ts, _, alice, _ := newTestServer(t)
