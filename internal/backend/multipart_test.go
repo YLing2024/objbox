@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/johannesboyne/gofakes3"
 )
@@ -35,6 +36,15 @@ func TestMultipartFullFlow(t *testing.T) {
 	id, err := b.CreateMultipartUpload("mp-bucket", "deep/dir/big.bin", map[string]string{"Content-Type": "application/octet-stream"})
 	if err != nil {
 		t.Fatalf("CreateMultipartUpload 失败: %v", err)
+	}
+
+	// ListMultipartUploads 应能看到该未完成任务。
+	lu, err := b.ListMultipartUploads("mp-bucket", nil, gofakes3.Prefix{HasPrefix: true, Prefix: "deep/"}, 1000)
+	if err != nil {
+		t.Fatalf("ListMultipartUploads 失败: %v", err)
+	}
+	if len(lu.Uploads) != 1 || lu.Uploads[0].UploadID != id {
+		t.Fatalf("ListMultipartUploads = %+v，期望 1 个", lu.Uploads)
 	}
 
 	etags := map[int]string{}
@@ -91,9 +101,16 @@ func TestMultipartFullFlow(t *testing.T) {
 		t.Fatalf("GetObject ETag 与 Complete 不一致")
 	}
 
-	// 完成后临时分片目录应被清理。
+	// 完成后临时分片目录应被清理，且不再出现在未完成任务列表里。
 	if _, err := os.Stat(b.uploadDir(string(id))); !os.IsNotExist(err) {
 		t.Fatalf("完成后分片目录应被删除，实际 err=%v", err)
+	}
+	lu2, err := b.ListMultipartUploads("mp-bucket", nil, gofakes3.Prefix{}, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lu2.Uploads) != 0 {
+		t.Fatalf("完成后不应有未完成任务，实际 %+v", lu2.Uploads)
 	}
 	// 未完成的分片任务不能出现在 ListObjects 里。
 	lo, err := b.ListBucket("mp-bucket", nil, gofakes3.ListBucketPage{MaxKeys: 1000})
@@ -189,6 +206,43 @@ func TestMultipartErrors(t *testing.T) {
 			t.Fatalf("期望 InvalidPartOrder，实际 %v", err)
 		}
 	})
+}
+
+// TestMultipartCleanupExpired 启动清理：超过 24 小时未完成的任务被清理，未过期的保留。
+func TestMultipartCleanupExpired(t *testing.T) {
+	b := newBackend(t)
+	if err := b.CreateBucket("cleanup-bucket"); err != nil {
+		t.Fatal(err)
+	}
+	oldID, err := b.CreateMultipartUpload("cleanup-bucket", "old.bin", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newID, err := b.CreateMultipartUpload("cleanup-bucket", "new.bin", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 把 old 的 Initiated 改成 25 小时前。
+	if _, ok, err := b.meta.UpdateUpload("cleanup-bucket", "old.bin", string(oldID), func(u *uploadMeta) error {
+		u.Initiated = b.now().Add(-25 * time.Hour).UnixNano()
+		return nil
+	}); err != nil || !ok {
+		t.Fatalf("改写 Initiated 失败: ok=%v err=%v", ok, err)
+	}
+
+	n, err := b.CleanupExpiredUploads(multipartExpiry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("应清理 1 个，实际 %d", n)
+	}
+	if _, ok, _ := b.meta.GetUpload("cleanup-bucket", "old.bin", string(oldID)); ok {
+		t.Fatal("过期任务元数据应被清理")
+	}
+	if _, ok, _ := b.meta.GetUpload("cleanup-bucket", "new.bin", string(newID)); !ok {
+		t.Fatal("未过期任务应保留")
+	}
 }
 
 // TestMultipartTempOutsideBuckets 确认分片临时目录位于 .objbox 内部，不属于任何桶。

@@ -53,6 +53,21 @@ func TestPresignedGetPut(t *testing.T) {
 		t.Fatalf("预签名 GET = %d %q，期望 200 %q", resp.StatusCode, body, content)
 	}
 
+	// 预签名 GET 配合 Range → 206 且只返回区间内容。
+	rangeReq, err := http.NewRequest(http.MethodGet, getURL.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rangeReq.Header.Set("Range", "bytes=0-4")
+	rangeResp, err := http.DefaultClient.Do(rangeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rangeBody := readBody(t, rangeResp)
+	if rangeResp.StatusCode != http.StatusPartialContent || string(rangeBody) != content[:5] {
+		t.Fatalf("预签名 Range = %d %q，期望 206 %q", rangeResp.StatusCode, rangeBody, content[:5])
+	}
+
 	// 过期：把 X-Amz-Date 改成 20 分钟前（expires=60）→ 403。
 	expired := withQueryParam(t, getURL.URL, "X-Amz-Date", time.Now().UTC().Add(-20*time.Minute).Format("20060102T150405Z"))
 	resp2, err := http.Get(expired)
