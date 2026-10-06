@@ -111,7 +111,7 @@ S3 的请求校验要求服务端拿到**明文 SK** 才能重算 HMAC 链 —�
 ## 9. 部署
 
 - systemd 单二进制：`/opt/objbox/objbox`，数据 `/data/objbox`，监听 `127.0.0.1:18930`
-- nginx：`s3.s3.example.com` → 反代
+- nginx：`s3.example.com` → 反代
   - 必须放开 `client_max_body_size`（大对象）
   - 上传路径 `proxy_request_buffering off`（否则大文件先落 nginx 临时盘）
   - 保持 `Host` 头原样（SigV4 的 CanonicalRequest 含 Host）
@@ -126,7 +126,7 @@ S3 的请求校验要求服务端拿到**明文 SK** 才能重算 HMAC 链 —�
 | **M1** | ListV2/V1、批量删、CopyObject、Range、分片上传、预签名 URL、用量统计 | `aws s3 cp` 大文件 + `rclone` |
 | **M2** | 隔离与安全用例全绿（跨账号/只读/停用/逃逸） | 逐条打真实请求 |
 | **M3** | Web admin 页 + `AUTH_MODE=sso` 对接 Auth Gateway | 浏览器真人路径 |
-| **M4** | Docker + 双语 README + 部署 `s3.s3.example.com` + 隐私扫描 → 转公开 | 线上真机 |
+| **M4** | Docker + 双语 README + 部署 `s3.example.com` + 隐私扫描 → 转公开 | 线上真机 |
 
 ## 11. 需要拍板的点
 
@@ -136,5 +136,5 @@ S3 的请求校验要求服务端拿到**明文 SK** 才能重算 HMAC 链 —�
 4. SK 明文落盘（0600）确认，主密钥加密要不要做
 5. S3 子集范围：上面清单有没有要加/砍的（版本控制？桶策略？）
 6. Web admin 要不要（M3），还是只要 CLI
-7. 端口 `18930` / 数据目录 `/data/objbox` / 域名 `s3.s3.example.com` 确认
+7. 端口 `18930` / 数据目录 `/data/objbox` / 域名 `s3.example.com` 确认
 8. 是否要对外提供"公开只读桶"（对象级匿名 GET）
