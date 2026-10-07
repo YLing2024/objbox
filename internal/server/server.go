@@ -149,7 +149,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 普通 S3 请求：来源命中白名单时补 CORS 头；所有 S3 响应带 Vary: Origin。
 	// 管理面在上面的分支已返回，不受影响。
-	s.applyCORS(w, r)
+	corsOrigin := s.corsOriginFor(r)
+	if corsOrigin != "" {
+		setCORSHeaders(w.Header(), corsOrigin)
+	}
 	addVaryOrigin(w.Header())
 
 	acct, err := s.auth.Authenticate(r)
@@ -179,7 +182,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 多区间只保留第一段（有意忽略多余区间，见 normalizeRange 注释）。
 	normalizeRange(r)
 
-	rw := newRespWriter(w, id, r.URL.Path)
+	rw := newRespWriter(w, id, r.URL.Path, corsOrigin)
 	if size, ok := rangeSizeHint(b, r); ok {
 		rw.rangeSize, rw.hasRangeSize = size, true
 	}

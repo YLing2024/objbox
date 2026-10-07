@@ -41,8 +41,8 @@ func (s *Server) serveCORSPreflight(w http.ResponseWriter, r *http.Request) bool
 	if !isCORSPreflight(r) {
 		return false
 	}
-	origin := r.Header.Get("Origin")
-	if s.settings == nil || !s.settings.Allows(origin) {
+	origin := s.corsOriginFor(r)
+	if origin == "" {
 		return false
 	}
 	setCORSHeaders(w.Header(), origin)
@@ -51,15 +51,16 @@ func (s *Server) serveCORSPreflight(w http.ResponseWriter, r *http.Request) bool
 	return true
 }
 
-// applyCORS 给普通（非预检）S3 请求补 CORS 头：来源命中白名单才回。
-func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
+// corsOriginFor 返回请求 Origin 命中白名单时的原值，否则空串。
+func (s *Server) corsOriginFor(r *http.Request) string {
 	if s.settings == nil {
-		return
+		return ""
 	}
 	origin := r.Header.Get("Origin")
 	if origin != "" && s.settings.Allows(origin) {
-		setCORSHeaders(w.Header(), origin)
+		return origin
 	}
+	return ""
 }
 
 // setCORSHeaders 写入命中白名单时的全部 CORS 响应头。
@@ -70,6 +71,16 @@ func setCORSHeaders(h http.Header, origin string) {
 	h.Set("Access-Control-Allow-Headers", corsAllowHeaders)
 	h.Set("Access-Control-Expose-Headers", corsExposeHeaders)
 	h.Set("Access-Control-Max-Age", corsMaxAge)
+}
+
+// stripCORSHeaders 清掉当前响应头里的所有 Access-Control-*（用于覆盖
+// gofakes3 自带的那套通配 CORS 头）。
+func stripCORSHeaders(h http.Header) {
+	for k := range h {
+		if strings.HasPrefix(http.CanonicalHeaderKey(k), "Access-Control-") {
+			h.Del(k)
+		}
+	}
 }
 
 // addVaryOrigin 保证响应带 Vary: Origin（已存在时不重复添加）。

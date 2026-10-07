@@ -21,6 +21,10 @@ type respWriter struct {
 	reqID string
 	path  string
 
+	// corsOrigin 非空表示来源命中白名单：写响应头前清掉 gofakes3 自带的
+	// Access-Control-*，改为本服务按需求回显的 CORS 头。
+	corsOrigin string
+
 	wrote     bool
 	status    int
 	buffering bool
@@ -30,8 +34,8 @@ type respWriter struct {
 	hasRangeSize bool
 }
 
-func newRespWriter(w http.ResponseWriter, reqID, path string) *respWriter {
-	return &respWriter{ResponseWriter: w, reqID: reqID, path: path}
+func newRespWriter(w http.ResponseWriter, reqID, path, corsOrigin string) *respWriter {
+	return &respWriter{ResponseWriter: w, reqID: reqID, path: path, corsOrigin: corsOrigin}
 }
 
 func (w *respWriter) WriteHeader(status int) {
@@ -42,6 +46,12 @@ func (w *respWriter) WriteHeader(status int) {
 	w.status = status
 
 	h := w.Header()
+	// gofakes3 默认给所有响应塞 Access-Control-Allow-Origin: *，与「命中白名单
+	// 才回显来源、未命中不回」的需求冲突；统一清掉后按本服务的判定重设。
+	stripCORSHeaders(h)
+	if w.corsOrigin != "" {
+		setCORSHeaders(h, w.corsOrigin)
+	}
 	h.Set("Server", "objbox")
 	if w.reqID != "" {
 		h.Set("x-amz-request-id", w.reqID)
