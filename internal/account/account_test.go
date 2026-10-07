@@ -174,3 +174,74 @@ func TestMaskSecret(t *testing.T) {
 		}
 	}
 }
+
+// M5：旧账号表（无 autoCreateBucket / bucket 字段）加载后按缺省值生效。
+func TestLoadOldAccountsAppliesM5Defaults(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{"version":1,"accounts":[
+		{"name":"legacy","ak":"AKLEGACY0001","sk":"s1","root":""}
+	]}`
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(raw), FileMode); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load(dir)
+	if err != nil {
+		t.Fatalf("旧账号表应能加载: %v", err)
+	}
+	a, ok := s.Find("legacy")
+	if !ok {
+		t.Fatal("应能找到 legacy 账号")
+	}
+	if !a.AutoCreateBucket {
+		t.Fatal("旧表缺省 autoCreateBucket 应为 true")
+	}
+	if a.Bucket != "legacy" {
+		t.Fatalf("旧表缺省 bucket 应为账号名，实际 %q", a.Bucket)
+	}
+}
+
+// M5：显式 false / 指定桶名应被记录，且落盘后可再次读取。
+func TestAddAccountM5FieldsRoundTrip(t *testing.T) {
+	s, dir := newStore(t)
+
+	no := false
+	a, err := s.AddAccount("manual", "", false, AddOptions{Bucket: "my-bucket", AutoCreateBucket: &no})
+	if err != nil {
+		t.Fatalf("AddAccount 失败: %v", err)
+	}
+	if a.AutoCreateBucket {
+		t.Fatal("显式 false 时 AutoCreateBucket 应为 false")
+	}
+	if a.Bucket != "my-bucket" {
+		t.Fatalf("bucket = %q，期望 my-bucket", a.Bucket)
+	}
+
+	// 默认账号：自动建桶、桶名 = 账号名。
+	b, err := s.AddAccount("auto", "", false, AddOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !b.AutoCreateBucket || b.Bucket != "auto" {
+		t.Fatalf("默认应为 autoCreateBucket=true bucket=auto，实际 %+v", b)
+	}
+
+	// 显式落盘：文件里必须能看到两个字段。
+	raw, err := os.ReadFile(filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"autoCreateBucket"`, `"bucket"`, `"my-bucket"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("账号表应显式包含 %s，实际：%s", want, raw)
+		}
+	}
+
+	re, err := Load(dir)
+	if err != nil {
+		t.Fatalf("重新 Load 失败: %v", err)
+	}
+	got, ok := re.Find("manual")
+	if !ok || got.AutoCreateBucket || got.Bucket != "my-bucket" {
+		t.Fatalf("再读取字段不一致: %+v ok=%v", got, ok)
+	}
+}

@@ -58,15 +58,47 @@ var NameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 func ValidName(name string) bool { return NameRe.MatchString(name) }
 
 // Account 是一个账号。一个账号对应一套 AK/SK 与一个隔离根目录。
+//
+// AutoCreateBucket / Bucket 是 M5 新增的「账号即空间」字段：前者控制请求时
+// 桶不存在是否自动创建，后者是该账号的默认桶名。读取旧账号表（不含这两列）
+// 时由 UnmarshalJSON 补齐缺省值，保证向后兼容。
 type Account struct {
-	Name       string `json:"name"`
-	AK         string `json:"ak"`
-	SK         string `json:"sk"`
-	Root       string `json:"root"`
-	Readonly   bool   `json:"readonly"`
-	Disabled   bool   `json:"disabled"`
-	QuotaBytes int64  `json:"quotaBytes"`
-	Note       string `json:"note"`
+	Name             string `json:"name"`
+	AK               string `json:"ak"`
+	SK               string `json:"sk"`
+	Root             string `json:"root"`
+	Readonly         bool   `json:"readonly"`
+	Disabled         bool   `json:"disabled"`
+	QuotaBytes       int64  `json:"quotaBytes"`
+	Note             string `json:"note"`
+	AutoCreateBucket bool   `json:"autoCreateBucket"`
+	Bucket           string `json:"bucket"`
+}
+
+// accountJSON 是 Account 的别名，用于在 UnmarshalJSON 中区分「字段缺失」与
+// 「显式 false/空串」：别名保留默认解码，外层再用指针字段覆盖缺失语义。
+type accountJSON Account
+
+// UnmarshalJSON 实现向后兼容的缺省语义：
+//   - 旧表缺 autoCreateBucket → true；
+//   - 旧表缺 bucket（或为空）→ 账号名。
+func (a *Account) UnmarshalJSON(data []byte) error {
+	aux := struct {
+		*accountJSON
+		AutoCreateBucket *bool   `json:"autoCreateBucket"`
+		Bucket           *string `json:"bucket"`
+	}{accountJSON: (*accountJSON)(a)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	a.AutoCreateBucket = aux.AutoCreateBucket == nil || *aux.AutoCreateBucket
+	if aux.Bucket != nil {
+		a.Bucket = *aux.Bucket
+	}
+	if a.Bucket == "" {
+		a.Bucket = a.Name
+	}
+	return nil
 }
 
 // Clone 返回账号的深拷贝，避免外部修改内部状态。
@@ -76,6 +108,27 @@ func (a *Account) Clone() *Account {
 	}
 	c := *a
 	return &c
+}
+
+// AddOptions 控制新建账号的默认桶行为；零值表示「自动建桶、桶名 = 账号名」。
+type AddOptions struct {
+	// Bucket 是默认桶名；空字符串表示使用账号名。
+	Bucket string
+	// AutoCreateBucket 为 nil 表示缺省 true；显式传 false 表示该账号不自动建桶。
+	AutoCreateBucket *bool
+}
+
+// ResolveBucket 返回给定账号名与选项下应当使用的默认桶名。
+func (o AddOptions) ResolveBucket(name string) string {
+	if o.Bucket != "" {
+		return o.Bucket
+	}
+	return name
+}
+
+// AutoCreate 返回给定选项下的自动建桶开关（缺省 true）。
+func (o AddOptions) AutoCreate() bool {
+	return o.AutoCreateBucket == nil || *o.AutoCreateBucket
 }
 
 // fileFormat 是 accounts.json 的磁盘结构。
@@ -349,7 +402,15 @@ func (s *Store) refreshSigLocked() {
 }
 
 // Add 新建账号并落盘。返回的 SK 仅在此刻可见，调用方应只打印一次。
+//
+// 等价于 AddAccount(name, note, readonly, AddOptions{})，即默认自动建桶且
+// 桶名为账号名；这里不创建桶目录，由调用方在建表成功后调用 backend.EnsureBucketAt。
 func (s *Store) Add(name, note string, readonly bool) (*Account, error) {
+	return s.AddAccount(name, note, readonly, AddOptions{})
+}
+
+// AddAccount 新建账号并落盘，同时写入默认桶与自动建桶开关。
+func (s *Store) AddAccount(name, note string, readonly bool, opts AddOptions) (*Account, error) {
 	if !ValidName(name) {
 		return nil, fmt.Errorf("account: 非法账号名 %q（须匹配 %s）", name, NameRe.String())
 	}
@@ -370,12 +431,14 @@ func (s *Store) Add(name, note string, readonly bool) (*Account, error) {
 	}
 
 	a := &Account{
-		Name:     name,
-		AK:       ak,
-		SK:       sk,
-		Root:     filepath.Join(s.dataDir, "roots", name),
-		Readonly: readonly,
-		Note:     note,
+		Name:             name,
+		AK:               ak,
+		SK:               sk,
+		Root:             filepath.Join(s.dataDir, "roots", name),
+		Readonly:         readonly,
+		Note:             note,
+		AutoCreateBucket: opts.AutoCreate(),
+		Bucket:           opts.ResolveBucket(name),
 	}
 	if err := os.MkdirAll(a.Root, 0o700); err != nil {
 		return nil, fmt.Errorf("account: 创建 root 目录失败: %w", err)
