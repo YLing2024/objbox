@@ -50,6 +50,12 @@ export interface OneTimeCredential {
   autoCreateBucket?: boolean
 }
 
+export interface Settings {
+  corsOrigins: string[]
+  corsEnabled: boolean
+  corsSource: 'settings' | 'env' | 'none'
+}
+
 export class ApiError extends Error {
   status: number
 
@@ -140,4 +146,7 @@ export const api = {
     request<Account>(`/api/admin/accounts/${encodeURIComponent(name)}`, jsonInit('PATCH', patch)),
   remove: (name: string) =>
     request<{ message: string }>(`/api/admin/accounts/${encodeURIComponent(name)}`, jsonInit('DELETE')),
+  settings: () => request<Settings>('/api/admin/settings'),
+  updateSettings: (corsOrigins: string[]) =>
+    request<Settings>('/api/admin/settings', jsonInit('PUT', { corsOrigins })),
 }

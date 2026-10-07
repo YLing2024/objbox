@@ -66,6 +66,22 @@ input {
   background: #fff;
 }
 
+textarea {
+  font: inherit;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.ok {
+  color: #027a48;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -367,4 +383,28 @@ button.link:disabled {
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.cors {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 24px;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.cors-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.cors-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }

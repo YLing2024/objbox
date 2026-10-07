@@ -295,6 +295,156 @@ function BucketPanel({
   )
 }
 
+// ---- 跨域白名单（CORS） ----
+
+// validateOrigin 与后端 settings.Normalize 规则一致，仅用于就地提示。
+function validateOrigin(raw: string): string {
+  const s = raw.trim()
+  if (!s) {
+    return '不能为空'
+  }
+  let u: URL
+  try {
+    u = new URL(s.replace(/\/$/, ''))
+  } catch {
+    return '不是合法的 URL'
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    return '只支持 http 或 https'
+  }
+  if (!u.hostname) {
+    return '缺少主机名'
+  }
+  if (u.username || u.password) {
+    return '不得包含用户名或密码'
+  }
+  if (u.pathname !== '' && u.pathname !== '/') {
+    return '只能填 scheme://host[:port]，不得带路径'
+  }
+  if (u.search || u.hash) {
+    return '不得带查询或片段'
+  }
+  if (u.port && (Number(u.port) < 1 || Number(u.port) > 65535)) {
+    return '端口号非法'
+  }
+  return ''
+}
+
+// parseOrigins 把文本域的每一行（也支持逗号分隔）解析为「来源 + 行号」。
+function parseOrigins(text: string): { origin: string; line: number }[] {
+  const out: { origin: string; line: number }[] = []
+  text.split('\n').forEach((line, i) => {
+    line.split(',').forEach((token) => {
+      const t = token.trim()
+      if (t) {
+        out.push({ origin: t, line: i + 1 })
+      }
+    })
+  })
+  return out
+}
+
+function CORSPanel() {
+  const [value, setValue] = useState('')
+  const [effective, setEffective] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const r = await api.settings()
+      setValue(r.corsOrigins.join('\n'))
+      setEffective(r.corsOrigins)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '读取跨域设置失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const validationError = (() => {
+    for (const item of parseOrigins(value)) {
+      const problem = validateOrigin(item.origin)
+      if (problem) {
+        return `第 ${item.line} 行「${item.origin}」：${problem}`
+      }
+    }
+    return ''
+  })()
+
+  const save = async () => {
+    if (validationError) {
+      setError(validationError)
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      const origins = parseOrigins(value).map((item) => item.origin)
+      const r = await api.updateSettings(origins)
+      setEffective(r.corsOrigins)
+      setValue(r.corsOrigins.join('\n'))
+      setSaved(true)
+      window.setTimeout(() => setSaved(false), 2500)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section className="cors">
+      <div className="section-head">
+        <span className="section-title">跨域白名单（CORS）</span>
+      </div>
+      <p className="muted">
+        允许这些来源的网页在浏览器里直接读写本对象存储（预签名直传/直下）。留空表示关闭跨域。请只填你自己的前端域名。
+      </p>
+      <label className="cors-editor">
+        来源（每行一个，也支持逗号分隔）
+        <textarea
+          rows={4}
+          value={value}
+          spellCheck={false}
+          placeholder="https://app.example.com"
+          onChange={(e) => {
+            setValue(e.target.value)
+            setSaved(false)
+          }}
+        />
+      </label>
+      {validationError ? <p className="error">{validationError}</p> : null}
+      {error ? <p className="error">{error}</p> : null}
+      <div className="section-head">
+        <span className="muted">
+          当前生效：
+          {loading ? '加载中…' : effective.length > 0 ? effective.join('、') : '未开启跨域'}
+        </span>
+        <span className="cors-actions">
+          {saved ? <span className="ok">已保存并即时生效</span> : null}
+          <button
+            type="button"
+            className="primary"
+            disabled={saving || !!validationError}
+            onClick={() => void save()}
+          >
+            保存
+          </button>
+        </span>
+      </div>
+    </section>
+  )
+}
+
 // ---- 登录 / 未认证 ----
 
 function LoginView({
@@ -819,6 +969,7 @@ function AccountsView({
           ) : null}
         </tbody>
       </table>
+      <CORSPanel />
     </main>
   )
 }
