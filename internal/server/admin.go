@@ -105,6 +105,8 @@ func (s *Server) serveAdminAPI(w http.ResponseWriter, r *http.Request) {
 		s.adminAccountItem(w, r, strings.TrimPrefix(rest, "accounts/"))
 	case rest == "overview":
 		s.adminOverview(w, r)
+	case rest == "settings":
+		s.adminSettings(w, r)
 	default:
 		writeJSONError(w, http.StatusNotFound, "接口不存在")
 	}
@@ -520,6 +522,63 @@ func (s *Server) adminUpdateBucket(w http.ResponseWriter, r *http.Request, name 
 	}
 	s.admin.AuditDetail("accounts.bucket.update", name, "bucket="+acct.Bucket, r)
 	writeJSON(w, http.StatusOK, newAdminAccount(acct, account.MaskSecret(acct.SK)))
+}
+
+// adminSettings 读写服务端级设置（当前仅跨域白名单），复用管理面鉴权。
+func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.readSettings(w, r)
+	case http.MethodPut:
+		s.updateSettings(w, r)
+	default:
+		writeJSONError(w, http.StatusMethodNotAllowed, "仅支持 GET 或 PUT")
+	}
+}
+
+// adminSettingsResponse 是设置读写接口的响应体。
+type adminSettingsResponse struct {
+	CORSOrigins []string `json:"corsOrigins"`
+	CORSEnabled bool     `json:"corsEnabled"`
+	CORSSource  string   `json:"corsSource"`
+}
+
+func (s *Server) settingsResponse() adminSettingsResponse {
+	origins := s.settings.Origins()
+	if origins == nil {
+		origins = []string{}
+	}
+	return adminSettingsResponse{
+		CORSOrigins: origins,
+		CORSEnabled: len(origins) > 0,
+		CORSSource:  string(s.settings.Source()),
+	}
+}
+
+func (s *Server) readSettings(w http.ResponseWriter, r *http.Request) {
+	s.admin.Audit("settings.get", "-", r)
+	writeJSON(w, http.StatusOK, s.settingsResponse())
+}
+
+// updateSettings 校验后原子落盘并即时生效；校验失败 400 并指明第 N 行非法。
+func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CORSOrigins *[]string `json:"corsOrigins"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "请求体非法")
+		return
+	}
+	if body.CORSOrigins == nil {
+		writeJSONError(w, http.StatusBadRequest, "缺少 corsOrigins 字段")
+		return
+	}
+	if err := s.settings.SetCORSOrigins(*body.CORSOrigins); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.admin.Audit("settings.update", "-", r)
+	writeJSON(w, http.StatusOK, s.settingsResponse())
 }
 
 func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {

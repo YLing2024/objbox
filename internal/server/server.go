@@ -22,14 +22,16 @@ import (
 	"github.com/YLing2024/objbox/internal/auth"
 	"github.com/YLing2024/objbox/internal/backend"
 	"github.com/YLing2024/objbox/internal/randstr"
+	"github.com/YLing2024/objbox/internal/settings"
 	"github.com/johannesboyne/gofakes3"
 )
 
 // Server 是本项目的 S3 HTTP 入口。
 type Server struct {
-	auth  *auth.Authenticator
-	store *account.Store
-	admin *adminauth.Service
+	auth     *auth.Authenticator
+	store    *account.Store
+	admin    *adminauth.Service
+	settings *settings.Store
 
 	// AccessLog 为 true 时打印访问日志；Authorization 一律脱敏。
 	AccessLog bool
@@ -55,6 +57,12 @@ func New(store *account.Store) (*Server, error) {
 		return nil, err
 	}
 	s.admin = adm
+	cfg, err := settings.Load(store.DataDir())
+	if err != nil {
+		s.Close()
+		return nil, err
+	}
+	s.settings = cfg
 	for _, a := range store.List() {
 		if _, _, err := s.accountHandler(a); err != nil {
 			s.Close()
@@ -127,10 +135,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.serveAdminAPI(w, r)
 			return
 		}
-		if s.serveAdminStatic(w, r) {
-			return
-		}
 	}
+
+	// 跨域预检必须在签名校验之前短路：命中的来源直接回 204，不要求任何签名/认证。
+	// 未命中的预检不额外回 CORS 头，交回下面的正常流程（其余行为不变）。
+	if s.serveCORSPreflight(w, r) {
+		return
+	}
+
+	if s.admin != nil && s.serveAdminStatic(w, r) {
+		return
+	}
+
+	// 普通 S3 请求：来源命中白名单时补 CORS 头；所有 S3 响应带 Vary: Origin。
+	// 管理面在上面的分支已返回，不受影响。
+	s.applyCORS(w, r)
+	addVaryOrigin(w.Header())
 
 	acct, err := s.auth.Authenticate(r)
 	if err != nil {
