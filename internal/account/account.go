@@ -550,6 +550,34 @@ func (s *Store) Update(name string, note *string, quotaBytes *int64) (*Account, 
 	return na.Clone(), nil
 }
 
+// UpdateBucket 修改账号的默认桶名与自动建桶开关（nil 表示该项不改），一次原子落盘。
+//
+// 桶名合法性由调用方在校验后传入；这里只负责 copy-on-write 与 0600 原子写盘，
+// 写成功后刷新文件签名，避免本进程的写入被热重载误判为外部变更。
+func (s *Store) UpdateBucket(name string, bucket *string, autoCreate *bool) (*Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.findLocked(name)
+	if !ok {
+		return nil, fmt.Errorf("account: 账号 %q 不存在", name)
+	}
+
+	na := a.Clone()
+	if bucket != nil {
+		na.Bucket = *bucket
+	}
+	if autoCreate != nil {
+		na.AutoCreateBucket = *autoCreate
+	}
+	s.replaceLocked(a, na)
+	if err := s.saveLocked(); err != nil {
+		s.replaceLocked(na, a)
+		return nil, err
+	}
+	s.refreshSigLocked()
+	return na.Clone(), nil
+}
+
 // Remove 从账号表移除账号（不删除其 root 数据目录，避免误删）。
 func (s *Store) Remove(name string) error {
 	s.mu.Lock()
