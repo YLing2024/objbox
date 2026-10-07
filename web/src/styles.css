@@ -271,3 +271,100 @@ td.ops {
   border-radius: 4px;
   background: #fef3f2;
 }
+
+button.link:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.secret {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.modal.wide {
+  width: 640px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-title {
+  font-weight: 600;
+}
+
+.buckets {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.buckets-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.buckets-table th,
+.buckets-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 13px;
+}
+
+.bucket-create,
+.bucket-default {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.bucket-create input {
+  flex: 1;
+}
+
+.bucket-default label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  flex: 1;
+}
+
+.bucket-default label.checkbox {
+  flex-direction: row;
+  align-items: center;
+}
+
+.bucket-default label.checkbox input {
+  width: auto;
+}
+
+.example {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.copyblock {
+  margin: 0;
+  padding: 10px;
+  background: #fafbfc;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

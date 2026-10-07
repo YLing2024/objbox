@@ -3,7 +3,9 @@ import {
   ApiError,
   api,
   type Account,
+  type AccountList,
   type AuthMode,
+  type BucketInfo,
   type OneTimeCredential,
   type Overview,
 } from './api'
@@ -46,9 +48,20 @@ const statusLabel: Record<Account['status'], string> = {
   readonly: '只读',
 }
 
-function CopyButton({ value, label = '复制' }: { value: string; label?: string }) {
+function CopyButton({
+  value,
+  label = '复制',
+  disabled = false,
+}: {
+  value: string
+  label?: string
+  disabled?: boolean
+}) {
   const [done, setDone] = useState(false)
   const copy = async () => {
+    if (disabled) {
+      return
+    }
     try {
       await navigator.clipboard.writeText(value)
       setDone(true)
@@ -58,9 +71,227 @@ function CopyButton({ value, label = '复制' }: { value: string; label?: string
     }
   }
   return (
-    <button type="button" className="link" onClick={copy}>
+    <button type="button" className="link" disabled={disabled} onClick={copy}>
       {done ? '已复制' : label}
     </button>
+  )
+}
+
+// SK 显隐：点击一次切换为常显，再点一次隐藏（不依赖 hover / 按住 / 鼠标按键，触摸与鼠标一致）。
+// 列表与详情窗口共用本组件，掩码时复制按钮禁用、常显时可复制。
+// 手工验证：桌面点击「显示」一次 → 保持明文；手机触摸点击一次 → 同样保持明文，不会立即回弹。
+function SecretCell({
+  masked,
+  secret,
+  shown,
+  onToggle,
+}: {
+  masked: string
+  secret?: string
+  shown: boolean
+  onToggle: () => void
+}) {
+  const display = shown && secret ? secret : masked
+  return (
+    <span className="secret">
+      <code>{display}</code>{' '}
+      <button type="button" className="link" onClick={onToggle}>
+        {shown ? '隐藏' : '显示'}
+      </button>{' '}
+      <CopyButton value={secret ?? ''} disabled={!shown || !secret} />
+    </span>
+  )
+}
+
+const bucketNameRe = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/
+
+// validateBucketName 与后端 ValidateBucket 规则一致，仅用于就地提示。
+function validateBucketName(name: string): string {
+  if (name.length < 3 || name.length > 63) {
+    return '桶名长度需在 3-63 之间'
+  }
+  if (name.includes('..')) {
+    return '桶名不能包含 ..'
+  }
+  if (!bucketNameRe.test(name)) {
+    return '桶名只允许小写字母、数字、点与连字符，且首尾不能是点或连字符'
+  }
+  return ''
+}
+
+// BucketPanel 是桶管理面板：账号详情窗口与「桶管理」窗口共用同一组件。
+function BucketPanel({
+  account,
+  onAccountChanged,
+}: {
+  account: Account
+  onAccountChanged: (a: Account) => void
+}) {
+  const [buckets, setBuckets] = useState<BucketInfo[]>([])
+  const [loading, setLoading] = useState(true)
+  const [newName, setNewName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [editBucket, setEditBucket] = useState(account.bucket)
+  const [editAuto, setEditAuto] = useState(account.autoCreateBucket)
+  const [saveBusy, setSaveBusy] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await api.listBuckets(account.name)
+      setBuckets(r.buckets)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '读取桶列表失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [account.name])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  useEffect(() => {
+    setEditBucket(account.bucket)
+    setEditAuto(account.autoCreateBucket)
+  }, [account.bucket, account.autoCreateBucket])
+
+  const create = async () => {
+    const name = newName.trim()
+    const problem = validateBucketName(name)
+    if (problem) {
+      setError(problem)
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await api.createBucket(account.name, name)
+      setNewName('')
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '建桶失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async (b: BucketInfo) => {
+    if (!window.confirm(`确定删除桶 ${b.name}？仅空桶可删，桶内还有对象时需先清空。`)) {
+      return
+    }
+    setError('')
+    try {
+      await api.deleteBucket(account.name, b.name)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '删除桶失败')
+    }
+  }
+
+  const save = async () => {
+    const name = editBucket.trim()
+    const problem = validateBucketName(name)
+    if (problem) {
+      setError(problem)
+      return
+    }
+    setSaveBusy(true)
+    setError('')
+    try {
+      const updated = await api.updateBucket(account.name, {
+        bucket: name,
+        autoCreateBucket: editAuto,
+      })
+      onAccountChanged(updated)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setSaveBusy(false)
+    }
+  }
+
+  return (
+    <div className="buckets">
+      <div className="section-head">
+        <span className="section-title">桶</span>
+        <button type="button" className="link" onClick={() => void load()}>
+          刷新
+        </button>
+      </div>
+      <table className="buckets-table">
+        <thead>
+          <tr>
+            <th>桶名</th>
+            <th>对象数</th>
+            <th>占用</th>
+            <th>默认</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {buckets.map((b) => (
+            <tr key={b.name}>
+              <td>
+                <code>{b.name}</code> <CopyButton value={b.name} />
+              </td>
+              <td>{b.objects}</td>
+              <td>{formatBytes(b.bytes)}</td>
+              <td>{b.isDefault ? '默认' : ''}</td>
+              <td>
+                <button type="button" className="link danger" onClick={() => void remove(b)}>
+                  删除
+                </button>
+              </td>
+            </tr>
+          ))}
+          {loading ? (
+            <tr>
+              <td colSpan={5} className="muted">
+                加载中…
+              </td>
+            </tr>
+          ) : buckets.length === 0 ? (
+            <tr>
+              <td colSpan={5} className="muted">
+                暂无桶
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+
+      <div className="bucket-create">
+        <input
+          value={newName}
+          placeholder="新桶名（3-63 位）"
+          onChange={(e) => setNewName(e.target.value)}
+        />
+        <button type="button" className="primary" disabled={busy} onClick={() => void create()}>
+          新建桶
+        </button>
+      </div>
+
+      <div className="bucket-default">
+        <label>
+          默认桶
+          <input value={editBucket} onChange={(e) => setEditBucket(e.target.value)} />
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={editAuto}
+            onChange={(e) => setEditAuto(e.target.checked)}
+          />
+          自动创建同名桶
+        </label>
+        <button type="button" disabled={saveBusy} onClick={() => void save()}>
+          保存
+        </button>
+      </div>
+      {error ? <p className="error">{error}</p> : null}
+    </div>
   )
 }
 
@@ -274,6 +505,132 @@ function EditAccountModal({
   )
 }
 
+// ---- 账号详情窗口 ----
+
+function AccountDetailModal({
+  account,
+  endpoint,
+  region,
+  pathStyle,
+  secrets,
+  shown,
+  onToggleSecret,
+  onAccountChanged,
+  onClose,
+}: {
+  account: Account
+  endpoint: string
+  region: string
+  pathStyle: boolean
+  secrets: Record<string, string>
+  shown: Record<string, boolean>
+  onToggleSecret: (name: string) => void
+  onAccountChanged: (a: Account) => void
+  onClose: () => void
+}) {
+  const secretShown = !!shown[account.name]
+  const sk = secretShown && secrets[account.name] ? secrets[account.name] : account.sk
+  const defaultBucket = account.bucket || account.name
+  const addressing = pathStyle ? 'Path-style' : 'Virtual-hosted-style'
+  const example = [
+    `rclone config create objbox s3 provider Other env_auth false \\`,
+    `  access_key_id ${account.ak} secret_access_key ${sk} \\`,
+    `  endpoint ${endpoint} region ${region}`,
+    '',
+    `通用 S3 客户端：`,
+    `Endpoint: ${endpoint}`,
+    `AK: ${account.ak}`,
+    `SK: ${sk}`,
+    `Bucket: ${defaultBucket}`,
+    `Region: ${region}`,
+    `寻址: ${addressing}`,
+  ].join('\n')
+
+  return (
+    <div className="overlay">
+      <div className="card modal wide">
+        <h2>账号详情 {account.name}</h2>
+        <dl className="kv">
+          <dt>Endpoint</dt>
+          <dd>
+            <code>{endpoint}</code> <CopyButton value={endpoint} />
+          </dd>
+          <dt>Bucket</dt>
+          <dd>
+            <code>{defaultBucket}</code> <CopyButton value={defaultBucket} />
+          </dd>
+          <dt>Access Key</dt>
+          <dd>
+            <code>{account.ak}</code> <CopyButton value={account.ak} />
+          </dd>
+          <dt>Secret Key</dt>
+          <dd>
+            <SecretCell
+              masked={account.sk}
+              secret={secrets[account.name]}
+              shown={secretShown}
+              onToggle={() => onToggleSecret(account.name)}
+            />
+          </dd>
+          <dt>Region</dt>
+          <dd>
+            <code>{region}</code> <CopyButton value={region} />
+          </dd>
+          <dt>Addressing</dt>
+          <dd>
+            <code>{addressing}</code> <CopyButton value={addressing} />{' '}
+            <span className="muted">客户端里需选 Path-style</span>
+          </dd>
+        </dl>
+
+        <div className="example">
+          <div className="section-head">
+            <span className="section-title">示例配置</span>
+            <CopyButton label="复制示例" value={example} />
+          </div>
+          <pre className="copyblock">{example}</pre>
+        </div>
+
+        <p className="muted">桶不存在会自动创建，Bucket 那栏随便填或填账号名即可。</p>
+
+        <BucketPanel account={account} onAccountChanged={onAccountChanged} />
+
+        <div className="actions">
+          <button type="button" className="primary" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---- 桶管理窗口 ----
+
+function BucketManageModal({
+  account,
+  onAccountChanged,
+  onClose,
+}: {
+  account: Account
+  onAccountChanged: (a: Account) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="overlay">
+      <div className="card modal wide">
+        <h2>桶管理 {account.name}</h2>
+        <BucketPanel account={account} onAccountChanged={onAccountChanged} />
+        <div className="actions">
+          <button type="button" className="primary" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ---- 一次性密钥弹窗 ----
 
 function SecretModal({
@@ -362,20 +719,28 @@ function SecretModal({
 
 function AccountsView({
   accounts,
+  secrets,
+  shown,
+  onToggleSecret,
   onAdd,
-  onReveal,
   onRotate,
   onToggle,
   onEdit,
   onDelete,
+  onDetail,
+  onBuckets,
 }: {
   accounts: Account[]
+  secrets: Record<string, string>
+  shown: Record<string, boolean>
+  onToggleSecret: (name: string) => void
   onAdd: () => void
-  onReveal: (name: string) => void
   onRotate: (name: string) => void
   onToggle: (a: Account) => void
   onEdit: (a: Account) => void
   onDelete: (name: string) => void
+  onDetail: (a: Account) => void
+  onBuckets: (a: Account) => void
 }) {
   return (
     <main className="content">
@@ -400,50 +765,51 @@ function AccountsView({
           </tr>
         </thead>
         <tbody>
-          {accounts.map((a) => {
-            const revealed = a.sk.includes('****')
-            return (
-              <tr key={a.name}>
-                <td>{a.name}</td>
-                <td className={a.bucketExists ? 'path' : 'muted'}>
-                  {a.bucketExists ? a.bucket : '未建桶'}
-                </td>
-                <td>
-                  <code>{a.ak}</code> <CopyButton value={a.ak} />
-                </td>
-                <td>
-                  <code>{a.sk}</code>{' '}
-                  {revealed ? (
-                    <button type="button" className="link" onClick={() => onReveal(a.name)}>
-                      显示
-                    </button>
-                  ) : (
-                    <CopyButton value={a.sk} />
-                  )}
-                </td>
-                <td className="path">{a.root}</td>
-                <td>{formatBytes(a.usageBytes)}</td>
-                <td>
-                  <span className={`status ${a.status}`}>{statusLabel[a.status]}</span>
-                </td>
-                <td>{a.note}</td>
-                <td className="ops">
-                  <button type="button" className="link" onClick={() => onRotate(a.name)}>
-                    轮换 SK
-                  </button>
-                  <button type="button" className="link" onClick={() => onToggle(a)}>
-                    {a.disabled ? '启用' : '停用'}
-                  </button>
-                  <button type="button" className="link" onClick={() => onEdit(a)}>
-                    编辑
-                  </button>
-                  <button type="button" className="link danger" onClick={() => onDelete(a.name)}>
-                    删除
-                  </button>
-                </td>
-              </tr>
-            )
-          })}
+          {accounts.map((a) => (
+            <tr key={a.name}>
+              <td>{a.name}</td>
+              <td className={a.bucketExists ? 'path' : 'muted'}>
+                {a.bucketExists ? a.bucket : '未建桶'}
+              </td>
+              <td>
+                <code>{a.ak}</code> <CopyButton value={a.ak} />
+              </td>
+              <td>
+                <SecretCell
+                  masked={a.sk}
+                  secret={secrets[a.name]}
+                  shown={!!shown[a.name]}
+                  onToggle={() => onToggleSecret(a.name)}
+                />
+              </td>
+              <td className="path">{a.root}</td>
+              <td>{formatBytes(a.usageBytes)}</td>
+              <td>
+                <span className={`status ${a.status}`}>{statusLabel[a.status]}</span>
+              </td>
+              <td>{a.note}</td>
+              <td className="ops">
+                <button type="button" className="link" onClick={() => onDetail(a)}>
+                  详情
+                </button>
+                <button type="button" className="link" onClick={() => onBuckets(a)}>
+                  桶管理
+                </button>
+                <button type="button" className="link" onClick={() => onRotate(a.name)}>
+                  轮换 SK
+                </button>
+                <button type="button" className="link" onClick={() => onToggle(a)}>
+                  {a.disabled ? '启用' : '停用'}
+                </button>
+                <button type="button" className="link" onClick={() => onEdit(a)}>
+                  编辑
+                </button>
+                <button type="button" className="link danger" onClick={() => onDelete(a.name)}>
+                  删除
+                </button>
+              </td>
+            </tr>
+          ))}
           {accounts.length === 0 ? (
             <tr>
               <td colSpan={9} className="muted">
@@ -476,12 +842,31 @@ export default function App() {
   const [user, setUser] = useState('')
   const [overview, setOverview] = useState<Overview | null>(null)
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [endpoint, setEndpoint] = useState('')
+  const [region, setRegion] = useState('us-east-1')
+  const [pathStyle, setPathStyle] = useState(true)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [loginError, setLoginError] = useState('')
   const [addOpen, setAddOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Account | null>(null)
+  const [detail, setDetail] = useState<Account | null>(null)
+  const [bucketTarget, setBucketTarget] = useState<Account | null>(null)
   const [secret, setSecret] = useState<SecretState | null>(null)
+  const [secrets, setSecrets] = useState<Record<string, string>>({})
+  const [shown, setShown] = useState<Record<string, boolean>>({})
+
+  const applyList = useCallback((list: AccountList) => {
+    setAccounts(list.accounts)
+    setEndpoint(list.endpoint && list.endpoint !== '' ? list.endpoint : window.location.origin)
+    if (list.region) {
+      setRegion(list.region)
+    }
+    if (list.pathStyle !== undefined) {
+      setPathStyle(list.pathStyle)
+    }
+    return list.accounts
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -489,7 +874,7 @@ export default function App() {
     try {
       const [ov, list] = await Promise.all([api.overview(), api.accounts()])
       setOverview(ov)
-      setAccounts(list.accounts)
+      applyList(list)
       setAuthed(true)
       setUser(mode === 'sso' ? 'sso 用户' : 'admin')
       navigate('/accounts')
@@ -505,7 +890,7 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [mode, navigate])
+  }, [mode, navigate, applyList])
 
   useEffect(() => {
     void load()
@@ -514,7 +899,13 @@ export default function App() {
   const refresh = useCallback(async () => {
     const [ov, list] = await Promise.all([api.overview(), api.accounts()])
     setOverview(ov)
-    setAccounts(list.accounts)
+    return applyList(list)
+  }, [applyList])
+
+  const applyAccount = useCallback((updated: Account) => {
+    setAccounts((prev) => prev.map((a) => (a.name === updated.name ? updated : a)))
+    setDetail((prev) => (prev && prev.name === updated.name ? updated : prev))
+    setBucketTarget((prev) => (prev && prev.name === updated.name ? updated : prev))
   }, [])
 
   const onLogin = async (password: string) => {
@@ -539,16 +930,36 @@ export default function App() {
     navigate('/login')
   }
 
-  const onReveal = async (name: string) => {
-    try {
-      const r = await api.reveal(name)
-      const found = r.accounts.find((a) => a.name === name)
-      if (found) {
-        setAccounts((prev) => prev.map((a) => (a.name === name ? { ...a, sk: found.sk } : a)))
+  const onToggleSecret = useCallback(
+    async (name: string) => {
+      if (shown[name]) {
+        setShown((prev) => ({ ...prev, [name]: false }))
+        return
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '读取失败')
+      if (!secrets[name]) {
+        try {
+          const r = await api.reveal(name)
+          const found = r.accounts.find((a) => a.name === name)
+          if (!found) {
+            setError('读取 SK 失败')
+            return
+          }
+          setSecrets((prev) => ({ ...prev, [name]: found.sk }))
+        } catch (e) {
+          setError(e instanceof Error ? e.message : '读取 SK 失败')
+          return
+        }
+      }
+      setShown((prev) => ({ ...prev, [name]: true }))
+    },
+    [shown, secrets],
+  )
+
+  const closeDetail = () => {
+    if (detail) {
+      setShown((prev) => ({ ...prev, [detail.name]: false }))
     }
+    setDetail(null)
   }
 
   const onRotate = async (name: string) => {
@@ -557,6 +968,8 @@ export default function App() {
     }
     try {
       const r = await api.rotate(name)
+      setSecrets((prev) => ({ ...prev, [name]: r.sk }))
+      setShown((prev) => ({ ...prev, [name]: false }))
       setSecret({ title: '新的 SK（仅显示一次）', name, sk: r.sk })
       await refresh()
     } catch (e) {
@@ -602,28 +1015,35 @@ export default function App() {
       {error ? <div className="banner error">{error}</div> : null}
       <AccountsView
         accounts={accounts}
+        secrets={secrets}
+        shown={shown}
+        onToggleSecret={(n) => void onToggleSecret(n)}
         onAdd={() => setAddOpen(true)}
-        onReveal={(n) => void onReveal(n)}
         onRotate={(n) => void onRotate(n)}
         onToggle={(a) => void onToggle(a)}
         onEdit={(a) => setEditTarget(a)}
         onDelete={(n) => void onDelete(n)}
+        onDetail={(a) => setDetail(a)}
+        onBuckets={(a) => setBucketTarget(a)}
       />
       {addOpen ? (
         <AddAccountModal
           onClose={() => setAddOpen(false)}
           onCreated={(cred) => {
             setAddOpen(false)
-            setSecret({
-              title: '账号已创建（密钥仅显示一次）',
-              name: cred.name,
-              ak: cred.ak,
-              sk: cred.sk,
-              endpoint: cred.endpoint,
-              region: cred.region,
-              pathStyle: cred.pathStyle,
-            })
-            void refresh()
+            setSecrets((prev) => ({ ...prev, [cred.name]: cred.sk }))
+            setShown((prev) => ({ ...prev, [cred.name]: true }))
+            void (async () => {
+              try {
+                const list = await refresh()
+                const found = list.find((a) => a.name === cred.name)
+                if (found) {
+                  setDetail(found)
+                }
+              } catch (e) {
+                setError(e instanceof Error ? e.message : '加载失败')
+              }
+            })()
           }}
         />
       ) : null}
@@ -635,6 +1055,26 @@ export default function App() {
             setEditTarget(null)
             void refresh()
           }}
+        />
+      ) : null}
+      {detail ? (
+        <AccountDetailModal
+          account={detail}
+          endpoint={endpoint}
+          region={region}
+          pathStyle={pathStyle}
+          secrets={secrets}
+          shown={shown}
+          onToggleSecret={(n) => void onToggleSecret(n)}
+          onAccountChanged={applyAccount}
+          onClose={closeDetail}
+        />
+      ) : null}
+      {bucketTarget ? (
+        <BucketManageModal
+          account={bucketTarget}
+          onAccountChanged={applyAccount}
+          onClose={() => setBucketTarget(null)}
         />
       ) : null}
       {secret ? (
