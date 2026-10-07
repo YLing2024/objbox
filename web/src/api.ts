@@ -11,6 +11,9 @@ export interface Account {
   quotaBytes: number
   readonly: boolean
   disabled: boolean
+  bucket: string
+  autoCreateBucket: boolean
+  bucketExists: boolean
 }
 
 export interface Overview {
@@ -29,6 +32,8 @@ export interface OneTimeCredential {
   region?: string
   pathStyle?: boolean
   note?: string
+  bucket?: string
+  autoCreateBucket?: boolean
 }
 
 export class ApiError extends Error {
@@ -80,8 +85,11 @@ export const api = {
   accounts: () => request<{ accounts: Account[] }>('/api/admin/accounts'),
   reveal: (name: string) =>
     request<{ accounts: Account[] }>(`/api/admin/accounts?reveal=${encodeURIComponent(name)}`),
-  create: (name: string, note: string) =>
-    request<OneTimeCredential>('/api/admin/accounts', jsonInit('POST', { name, note })),
+  create: (name: string, note: string, bucket?: string, autoCreateBucket?: boolean) =>
+    request<OneTimeCredential>(
+      '/api/admin/accounts',
+      jsonInit('POST', { name, note, bucket: bucket || undefined, autoCreateBucket }),
+    ),
   rotate: (name: string) =>
     request<{ name: string; sk: string }>(
       `/api/admin/accounts/${encodeURIComponent(name)}/rotate`,

@@ -233,6 +233,16 @@ td.ops {
   color: var(--muted);
 }
 
+.modal label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal label.checkbox input {
+  width: auto;
+}
+
 .actions {
   display: flex;
   justify-content: flex-end;

@@ -158,6 +158,8 @@ function AddAccountModal({
 }) {
   const [name, setName] = useState('')
   const [note, setNote] = useState('')
+  const [autoCreate, setAutoCreate] = useState(true)
+  const [bucket, setBucket] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const valid = /^[a-z0-9-]{1,32}$/.test(name)
@@ -165,7 +167,7 @@ function AddAccountModal({
     setBusy(true)
     setError('')
     try {
-      const cred = await api.create(name, note)
+      const cred = await api.create(name, note, bucket.trim(), autoCreate)
       onCreated(cred)
     } catch (e) {
       setError(e instanceof Error ? e.message : '创建失败')
@@ -184,6 +186,23 @@ function AddAccountModal({
         <label>
           备注
           <input value={note} onChange={(e) => setNote(e.target.value)} />
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={autoCreate}
+            onChange={(e) => setAutoCreate(e.target.checked)}
+          />
+          自动创建同名桶
+        </label>
+        <label>
+          默认桶名（留空 = 账号名）
+          <input
+            value={bucket}
+            disabled={!autoCreate}
+            placeholder={name || '账号名'}
+            onChange={(e) => setBucket(e.target.value)}
+          />
         </label>
         {error ? <p className="error">{error}</p> : null}
         <div className="actions">
@@ -370,6 +389,7 @@ function AccountsView({
         <thead>
           <tr>
             <th>账号名</th>
+            <th>默认桶</th>
             <th>AK</th>
             <th>SK</th>
             <th>root 路径</th>
@@ -385,6 +405,9 @@ function AccountsView({
             return (
               <tr key={a.name}>
                 <td>{a.name}</td>
+                <td className={a.bucketExists ? 'path' : 'muted'}>
+                  {a.bucketExists ? a.bucket : '未建桶'}
+                </td>
                 <td>
                   <code>{a.ak}</code> <CopyButton value={a.ak} />
                 </td>
@@ -423,7 +446,7 @@ function AccountsView({
           })}
           {accounts.length === 0 ? (
             <tr>
-              <td colSpan={8} className="muted">
+              <td colSpan={9} className="muted">
                 暂无账号
               </td>
             </tr>
