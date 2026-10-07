@@ -144,6 +144,44 @@ func (b *Backend) CreateBucket(name string) error {
 	return nil
 }
 
+// EnsureBucket 幂等创建桶：不存在则创建，已存在视为成功。
+// 供「请求即建桶」使用；桶名照旧走 ValidateBucket，不放宽规则。
+func (b *Backend) EnsureBucket(name string) error {
+	if err := ValidateBucket(name); err != nil {
+		return gofakes3.ErrorMessage(gofakes3.ErrInvalidBucketName, err.Error())
+	}
+	if err := os.Mkdir(b.bucketDir(name), dirMode); err != nil && !errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("backend: 创建桶失败: %w", err)
+	}
+	return nil
+}
+
+// EnsureBucketAt 在给定账号 root 下幂等创建一个桶目录。
+//
+// 供「建账号即建桶」使用：root 必须是该账号自己的隔离根，桶名照旧走
+// ValidateBucket。已存在视为成功（幂等），绝不越过 root。
+func EnsureBucketAt(root, name string) error {
+	if root == "" {
+		return errors.New("backend: root 不能为空")
+	}
+	if err := ValidateBucket(name); err != nil {
+		return err
+	}
+	if err := os.Mkdir(filepath.Join(root, name), dirMode); err != nil && !errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("backend: 创建桶失败: %w", err)
+	}
+	return nil
+}
+
+// BucketExistsInRoot 判断账号 root 下是否存在指定桶目录（仅用于管理面展示）。
+func BucketExistsInRoot(root, name string) bool {
+	if root == "" || ValidateBucket(name) != nil {
+		return false
+	}
+	fi, err := os.Stat(filepath.Join(root, name))
+	return err == nil && fi.IsDir()
+}
+
 // BucketExists 判断桶是否存在。非法桶名按不存在处理。
 func (b *Backend) BucketExists(name string) (bool, error) {
 	return b.bucketExists(name), nil
