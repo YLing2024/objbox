@@ -373,19 +373,18 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
             }}
           />
         </label>
-        {validationError ? <p className="error">{validationError}</p> : null}
-        {error ? <p className="error">{error}</p> : null}
+        {error || validationError ? <p className="error">{error || validationError}</p> : null}
         <p className="muted">
           当前生效：
           {loading ? '加载中…' : effective.length > 0 ? effective.join('、') : '未开启跨域'}
         </p>
         {saved ? <p className="ok">已保存并即时生效</p> : null}
         <div className="actions">
-          <button type="button" onClick={onClose}>
-            关闭
-          </button>
           <button type="button" className="primary" disabled={saving} onClick={() => void save()}>
             保存
+          </button>
+          <button type="button" onClick={onClose}>
+            关闭
           </button>
         </div>
       </div>
