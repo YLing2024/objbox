@@ -167,20 +167,18 @@ func runAccount(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stderr, accountAddUsage)
 			return 2
 		}
-		bucketName := *bucket
-		if bucketName == "" {
-			bucketName = name
-		}
-		// 显式指定桶名，或默认要建桶时，桶名都必须合法；不放宽校验。
-		if *bucket != "" || !*noBucket {
-			if err := backend.ValidateBucket(bucketName); err != nil {
-				fmt.Fprintf(stderr, "桶名 %q 不合法：%v\n", bucketName, err)
+		// 显式指定的桶名非法才报错；未指定时由 DefaultBucketFor 决定默认桶：
+		// 账号名不足 3 位等导致默认桶名非法时自动回退，绝不因此让建号失败。
+		if *bucket != "" {
+			if err := backend.ValidateBucket(*bucket); err != nil {
+				fmt.Fprintf(stderr, "桶名 %q 不合法：%v\n", *bucket, err)
 				fmt.Fprint(stderr, accountAddUsage)
 				return 2
 			}
 		}
+		bucketName, autoCreate, bucketNote := backend.DefaultBucketFor(name, *bucket, !*noBucket)
 		warnDefaultDataDir(stderr, *dataDir, flagWasSet(fs, "data"))
-		return accountAdd(stdout, stderr, *dataDir, name, *note, *readonly, bucketName, *noBucket)
+		return accountAdd(stdout, stderr, *dataDir, name, *note, *readonly, bucketName, autoCreate, bucketNote)
 
 	case "list":
 		showSecret := fs.Bool("show-secret", false, "显示完整 SK")
@@ -263,16 +261,12 @@ func loadStore(stderr io.Writer, dataDir string) (*account.Store, int) {
 	return store, 0
 }
 
-func accountAdd(stdout, stderr io.Writer, dataDir, name, note string, readonly bool, bucket string, noBucket bool) int {
+func accountAdd(stdout, stderr io.Writer, dataDir, name, note string, readonly bool, bucket string, autoCreate bool, bucketNote string) int {
 	store, code := loadStore(stderr, dataDir)
 	if store == nil {
 		return code
 	}
-	opts := account.AddOptions{Bucket: bucket}
-	if noBucket {
-		disabled := false
-		opts.AutoCreateBucket = &disabled
-	}
+	opts := account.AddOptions{Bucket: bucket, AutoCreateBucket: &autoCreate}
 	a, err := store.AddAccount(name, note, readonly, opts)
 	if err != nil {
 		fmt.Fprintf(stderr, "%v\n", err)
@@ -293,6 +287,9 @@ func accountAdd(stdout, stderr io.Writer, dataDir, name, note string, readonly b
 	fmt.Fprintf(stdout, "root:     %s\n", a.Root)
 	fmt.Fprintf(stdout, "bucket:   %s\n", a.Bucket)
 	fmt.Fprintf(stdout, "auto-create-bucket: %v\n", a.AutoCreateBucket)
+	if bucketNote != "" {
+		fmt.Fprintf(stdout, "bucket-note: %s\n", bucketNote)
+	}
 	fmt.Fprintf(stdout, "data:     %s\n", store.DataDir())
 	fmt.Fprintf(stdout, "readonly: %v\n", a.Readonly)
 	if a.Note != "" {

@@ -224,3 +224,47 @@ func TestM5AccountAddInvalidBucketRejected(t *testing.T) {
 		t.Fatal("非法桶名不应创建账号")
 	}
 }
+
+// M6 §7：2 字符账号名默认桶名非法，应回退到 <name>-bucket 而不是直接失败。
+func TestM6AccountAddShortNameFallsBack(t *testing.T) {
+	dir := t.TempDir()
+	var out, errBuf bytes.Buffer
+	code := run([]string{"account", "add", "ab", "-data", dir}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("短账号名应成功，code=%d stderr=%q", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "bucket:   ab-bucket") {
+		t.Fatalf("输出应显示回退桶名 ab-bucket，实际 stdout=%q", out.String())
+	}
+	// 非法默认桶 ab 不应存在；回退桶 ab-bucket 应已创建。
+	if _, err := os.Stat(filepath.Join(dir, "roots", "ab", "ab")); !os.IsNotExist(err) {
+		t.Fatalf("非法默认桶 ab 不应存在，stat err=%v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "roots", "ab", "ab-bucket")); err != nil || !fi.IsDir() {
+		t.Fatalf("回退桶 ab-bucket 应已创建: err=%v", err)
+	}
+	store, err := account.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, ok := store.Find("ab")
+	if !ok || a.Bucket != "ab-bucket" || !a.AutoCreateBucket {
+		t.Fatalf("账号桶字段错误: %+v ok=%v", a, ok)
+	}
+}
+
+// M6 §7：显式 -bucket 指定非法桶名时仍必须明确报错。
+func TestM6AccountAddExplicitInvalidBucketStillFails(t *testing.T) {
+	dir := t.TempDir()
+	var out, errBuf bytes.Buffer
+	code := run([]string{"account", "add", "demo", "-bucket", "xx", "-data", dir}, &out, &errBuf)
+	if code != 2 {
+		t.Fatalf("显式非法桶名应以 2 退出，实际 %d（stdout=%q）", code, out.String())
+	}
+	if !strings.Contains(errBuf.String(), "不合法") {
+		t.Fatalf("应提示桶名不合法，实际 stderr=%q", errBuf.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, account.FileName)); !os.IsNotExist(err) {
+		t.Fatal("显式非法桶名不应创建账号")
+	}
+}
