@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/YLing2024/objbox/internal/account"
@@ -187,7 +189,12 @@ func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 		out = append(out, newAdminAccount(a, sk))
 	}
 	s.admin.Audit(op, reveal, r)
-	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accounts":  out,
+		"endpoint":  requestEndpoint(r),
+		"region":    "us-east-1",
+		"pathStyle": true,
+	})
 }
 
 func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
@@ -210,22 +217,20 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bucket := strings.TrimSpace(body.Bucket)
-	resolved := bucket
-	if resolved == "" {
-		resolved = name
-	}
-	autoCreate := body.AutoCreateBucket == nil || *body.AutoCreateBucket
-	// 显式指定桶名，或默认要建桶时，桶名都必须合法；不放宽校验。
-	if bucket != "" || autoCreate {
-		if err := backend.ValidateBucket(resolved); err != nil {
+	// 只有显式指定桶名才校验并报错；未指定时默认桶名非法会自动回退，
+	// 绝不因此让建号失败（M6 §7）。
+	if bucket != "" {
+		if err := backend.ValidateBucket(bucket); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "桶名不合法："+err.Error())
 			return
 		}
 	}
+	wantAuto := body.AutoCreateBucket == nil || *body.AutoCreateBucket
+	resolved, autoCreate, bucketNote := backend.DefaultBucketFor(name, bucket, wantAuto)
 
 	acct, err := s.store.AddAccount(name, body.Note, body.Readonly, account.AddOptions{
-		Bucket:           body.Bucket,
-		AutoCreateBucket: body.AutoCreateBucket,
+		Bucket:           resolved,
+		AutoCreateBucket: &autoCreate,
 	})
 	if err != nil {
 		writeJSONError(w, accountErrorStatus(err), err.Error())
@@ -247,7 +252,7 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		acct.QuotaBytes = *body.QuotaBytes
 	}
 	s.admin.AuditDetail("accounts.create", name, "bucket="+acct.Bucket, r)
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"name":             acct.Name,
 		"ak":               acct.AK,
 		"sk":               acct.SK,
@@ -259,10 +264,14 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		"endpoint":         requestEndpoint(r),
 		"region":           "us-east-1",
 		"pathStyle":        true,
-	})
+	}
+	if bucketNote != "" {
+		resp["bucketNote"] = bucketNote
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
-// adminAccountItem 处理 /api/admin/accounts/<name>[/<action>]。
+// adminAccountItem 处理 /api/admin/accounts/<name>[/<sub>...]。
 func (s *Server) adminAccountItem(w http.ResponseWriter, r *http.Request, rest string) {
 	segs := strings.Split(rest, "/")
 	name := segs[0]
@@ -281,11 +290,50 @@ func (s *Server) adminAccountItem(w http.ResponseWriter, r *http.Request, rest s
 		}
 		return
 	}
-	if len(segs) != 2 || r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "不支持的操作")
-		return
-	}
+
 	switch segs[1] {
+	case "rotate", "disable", "enable":
+		if len(segs) != 2 || r.Method != http.MethodPost {
+			writeJSONError(w, http.StatusMethodNotAllowed, "不支持的操作")
+			return
+		}
+		s.adminAccountAction(w, r, name, segs[1])
+	case "bucket":
+		// 改账号的默认桶名与自动建桶开关。
+		if len(segs) == 2 && r.Method == http.MethodPatch {
+			s.adminUpdateBucket(w, r, name)
+			return
+		}
+		writeJSONError(w, http.StatusMethodNotAllowed, "仅支持 PATCH")
+	case "buckets":
+		if len(segs) == 2 {
+			switch r.Method {
+			case http.MethodGet:
+				s.adminListBuckets(w, r, name)
+			case http.MethodPost:
+				s.adminCreateBucket(w, r, name)
+			default:
+				writeJSONError(w, http.StatusMethodNotAllowed, "仅支持 GET 或 POST")
+			}
+			return
+		}
+		if len(segs) == 3 {
+			if r.Method == http.MethodDelete {
+				s.adminDeleteBucket(w, r, name, segs[2])
+				return
+			}
+			writeJSONError(w, http.StatusMethodNotAllowed, "仅支持 DELETE")
+			return
+		}
+		writeJSONError(w, http.StatusNotFound, "接口不存在")
+	default:
+		writeJSONError(w, http.StatusNotFound, "接口不存在")
+	}
+}
+
+// adminAccountAction 处理 rotate / disable / enable。
+func (s *Server) adminAccountAction(w http.ResponseWriter, r *http.Request, name, action string) {
+	switch action {
 	case "rotate":
 		sk, err := s.store.Rotate(name)
 		if err != nil {
@@ -298,8 +346,6 @@ func (s *Server) adminAccountItem(w http.ResponseWriter, r *http.Request, rest s
 		s.adminSetDisabled(w, r, name, true)
 	case "enable":
 		s.adminSetDisabled(w, r, name, false)
-	default:
-		writeJSONError(w, http.StatusNotFound, "接口不存在")
 	}
 }
 
@@ -354,6 +400,128 @@ func (s *Server) adminDeleteAccount(w http.ResponseWriter, r *http.Request, name
 	})
 }
 
+// adminBucket 是管理面桶列表项；不含 SK。
+type adminBucket struct {
+	Name      string `json:"name"`
+	Objects   int    `json:"objects"`
+	Bytes     int64  `json:"bytes"`
+	IsDefault bool   `json:"isDefault"`
+}
+
+// adminListBuckets 返回该账号当前桶数组（含对象数 / 占用字节数 / 是否默认桶）。
+// 只读，不打开账号元数据库，也不返回任何 SK。
+func (s *Server) adminListBuckets(w http.ResponseWriter, r *http.Request, name string) {
+	acct, ok := s.store.Find(name)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "账号不存在")
+		return
+	}
+	names, err := backend.ListBucketNames(acct.Root)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "读取桶列表失败: "+err.Error())
+		return
+	}
+	out := make([]adminBucket, 0, len(names))
+	for _, b := range names {
+		objects, bytes, err := backend.BucketStats(acct.Root, b)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "统计桶用量失败: "+err.Error())
+			return
+		}
+		out = append(out, adminBucket{Name: b, Objects: objects, Bytes: bytes, IsDefault: b == acct.Bucket})
+	}
+	s.admin.Audit("accounts.buckets.list", name, r)
+	writeJSON(w, http.StatusOK, map[string]any{"buckets": out})
+}
+
+// adminCreateBucket 建桶：桶名走 ValidateBucket（不放宽），已存在 409，成功 201。
+func (s *Server) adminCreateBucket(w http.ResponseWriter, r *http.Request, name string) {
+	acct, ok := s.store.Find(name)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "账号不存在")
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "请求体非法")
+		return
+	}
+	bucket := strings.TrimSpace(body.Name)
+	if err := backend.ValidateBucket(bucket); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "桶名不合法："+err.Error())
+		return
+	}
+	if err := backend.CreateBucketAt(acct.Root, bucket); err != nil {
+		if errors.Is(err, backend.ErrBucketExists) {
+			writeJSONError(w, http.StatusConflict, "桶已存在")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "创建桶失败: "+err.Error())
+		return
+	}
+	s.admin.AuditDetail("accounts.bucket.create", name, "bucket="+bucket, r)
+	writeJSON(w, http.StatusCreated, map[string]any{"name": bucket})
+}
+
+// adminDeleteBucket 删空桶：不存在 404，非空 409；删默认桶也允许，且不自动重建。
+func (s *Server) adminDeleteBucket(w http.ResponseWriter, r *http.Request, name, bucket string) {
+	acct, ok := s.store.Find(name)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "账号不存在")
+		return
+	}
+	if err := backend.ValidateBucket(bucket); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "桶名不合法："+err.Error())
+		return
+	}
+	switch err := backend.DeleteBucketAt(acct.Root, bucket); {
+	case errors.Is(err, backend.ErrBucketNotFound):
+		writeJSONError(w, http.StatusNotFound, "桶不存在")
+		return
+	case errors.Is(err, backend.ErrBucketNotEmpty):
+		writeJSONError(w, http.StatusConflict, "桶内还有对象，请先清空桶内对象再删除")
+		return
+	case err != nil:
+		writeJSONError(w, http.StatusInternalServerError, "删除桶失败: "+err.Error())
+		return
+	}
+	s.admin.AuditDetail("accounts.bucket.delete", name, "bucket="+bucket, r)
+	writeJSON(w, http.StatusOK, map[string]any{"name": bucket, "message": "桶已删除"})
+}
+
+// adminUpdateBucket 改账号默认桶名与自动建桶开关；桶名非法 400，一次原子落盘。
+func (s *Server) adminUpdateBucket(w http.ResponseWriter, r *http.Request, name string) {
+	var body struct {
+		Bucket           *string `json:"bucket"`
+		AutoCreateBucket *bool   `json:"autoCreateBucket"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "请求体非法")
+		return
+	}
+	if body.Bucket == nil && body.AutoCreateBucket == nil {
+		writeJSONError(w, http.StatusBadRequest, "无可更新字段")
+		return
+	}
+	if body.Bucket != nil {
+		b := strings.TrimSpace(*body.Bucket)
+		if err := backend.ValidateBucket(b); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "桶名不合法："+err.Error())
+			return
+		}
+		body.Bucket = &b
+	}
+	acct, err := s.store.UpdateBucket(name, body.Bucket, body.AutoCreateBucket)
+	if err != nil {
+		writeJSONError(w, accountErrorStatus(err), err.Error())
+		return
+	}
+	s.admin.AuditDetail("accounts.bucket.update", name, "bucket="+acct.Bucket, r)
+	writeJSON(w, http.StatusOK, newAdminAccount(acct, account.MaskSecret(acct.SK)))
+}
+
 func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	accounts := s.store.List()
 	var total int64
@@ -379,8 +547,14 @@ func accountErrorStatus(err error) int {
 	return http.StatusBadRequest
 }
 
-// requestEndpoint 用请求 Host 推导 S3 Endpoint，供前端展示连接信息。
+// requestEndpoint 运行时推导对外 S3 Endpoint，供前端展示与一键复制接入信息。
+//
+// 优先级：环境变量 OBJBOX_PUBLIC_ENDPOINT（若设置）> X-Forwarded-Proto + X-Forwarded-Host
+// （或 Host）。本服务通常跑在反向代理之后，代理应透传这两个头；仓库内不写死任何真实域名。
 func requestEndpoint(r *http.Request) string {
+	if pub := strings.TrimSpace(os.Getenv("OBJBOX_PUBLIC_ENDPOINT")); pub != "" {
+		return strings.TrimRight(pub, "/")
+	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
@@ -388,5 +562,9 @@ func requestEndpoint(r *http.Request) string {
 	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
 		scheme = strings.ToLower(strings.TrimSpace(strings.Split(p, ",")[0]))
 	}
-	return scheme + "://" + r.Host
+	host := strings.TrimSpace(strings.Split(r.Host, ",")[0])
+	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
+		host = strings.TrimSpace(strings.Split(h, ",")[0])
+	}
+	return scheme + "://" + host
 }
