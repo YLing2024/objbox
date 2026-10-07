@@ -13,7 +13,26 @@ import (
 )
 
 func TestIsolationCrossAccountMatchesMissing(t *testing.T) {
-	ts, _, alice, bob := newTestServer(t)
+	// M0 反枚举断言在 autoCreateBucket=false 下必须原样成立。
+	store, err := account.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	no := false
+	alice, err := store.AddAccount("alice", "", false, account.AddOptions{AutoCreateBucket: &no})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.AddAccount("bob", "", false, account.AddOptions{AutoCreateBucket: &no})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	t.Cleanup(func() { ts.Close(); srv.Close() })
 
 	resp := signedDo(t, ts, http.MethodPut, "/alice-bucket", nil, alice, nil)
 	if resp.StatusCode != http.StatusOK {

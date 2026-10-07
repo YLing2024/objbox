@@ -138,14 +138,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		auth.WriteError(w, r, err)
 		return
 	}
-	if err := precheck(r, acct); err != nil {
-		auth.WriteError(w, r, err)
-		return
-	}
 
 	h, b, err := s.accountHandler(acct)
 	if err != nil {
 		auth.WriteError(w, r, auth.InternalErrorf("%v", err))
+		return
+	}
+
+	// 请求即建桶：认证通过、拿到账号后端后，为允许的操作自动补建缺失的桶。
+	if err := ensureBucketForRequest(r, acct, b); err != nil {
+		auth.WriteError(w, r, err)
+		return
+	}
+
+	if err := precheck(r, acct); err != nil {
+		auth.WriteError(w, r, err)
 		return
 	}
 
@@ -273,8 +280,11 @@ func quotaPrecheck(r *http.Request, acct *account.Account, b *backend.Backend) e
 
 // precheck 在进入协议层之前校验路径并做隔离判定：
 //   - 非法 bucket/key → 400 InvalidRequest；
-//   - 对象级请求、桶级请求（除建桶）指向的桶不在本账号 root 下
-//     → 403 AccessDenied，与“桶不存在”完全一致；
+//   - autoCreateBucket=false：桶不在本账号 root 下 → 403 AccessDenied，
+//     与「桶不存在」完全一致（M0 反枚举语义原样保留）；
+//   - autoCreateBucket=true：桶缺失不再 403（自动建桶已在 ensureBucketForRequest
+//     完成），放行后由协议层给出 NoSuchBucket / NoSuchKey / 空列表等语义；
+//     CopyObject 例外，其源/目标桶缺失仍统一 403，绝不隐式建桶；
 //   - CopyObject 的源桶不在本账号 root 下 → 403 AccessDenied（跨账号统一拒绝）。
 func precheck(r *http.Request, acct *account.Account) error {
 	bucket, key := splitPath(r)
@@ -297,22 +307,93 @@ func precheck(r *http.Request, acct *account.Account) error {
 	}
 
 	if !bucketInRoot(acct.Root, bucket) {
+		if acct.AutoCreateBucket && !isCopyObject(r) {
+			return nil
+		}
 		return auth.AccessDenied()
 	}
 
 	// CopyObject：源桶必须也在本账号 root 内，否则统一 403（跨账号语义）。
-	if r.Method == http.MethodPut && key != "" {
-		if src := r.Header.Get("x-amz-copy-source"); src != "" {
-			srcBucket, _, err := parseCopySource(src)
-			if err != nil {
-				return auth.InvalidRequestf("x-amz-copy-source 非法: %s", err.Error())
-			}
-			if !bucketInRoot(acct.Root, srcBucket) {
-				return auth.AccessDenied()
-			}
+	if isCopyObject(r) {
+		src := r.Header.Get("x-amz-copy-source")
+		srcBucket, _, err := parseCopySource(src)
+		if err != nil {
+			return auth.InvalidRequestf("x-amz-copy-source 非法: %s", err.Error())
+		}
+		if !bucketInRoot(acct.Root, srcBucket) {
+			return auth.AccessDenied()
 		}
 	}
 	return nil
+}
+
+// isCopyObject 判断是否为 CopyObject（PUT 对象且带 x-amz-copy-source）。
+func isCopyObject(r *http.Request) bool {
+	return r.Method == http.MethodPut &&
+		r.Header.Get("x-amz-copy-source") != "" &&
+		splitKey(r) != ""
+}
+
+// splitKey 只取路径中的 key 部分。
+func splitKey(r *http.Request) string {
+	_, key := splitPath(r)
+	return key
+}
+
+// ensureBucketForRequest 在请求已通过认证、按账号取得后端之后，为本账号
+// autoCreateBucket=true 且桶缺失的「读/写对象/分片」请求自动补建桶。
+//
+// 只在当前账号自己的 root 下创建（复用 Backend.EnsureBucket），桶名照旧走
+// ValidateBucket；CREATE 失败返回 5xx，绝不静默当作成功。DELETE 与 CopyObject
+// 明确不建桶。
+func ensureBucketForRequest(r *http.Request, acct *account.Account, b *backend.Backend) error {
+	if !acct.AutoCreateBucket {
+		return nil
+	}
+	bucket, key := splitPath(r)
+	if bucket == "" {
+		return nil
+	}
+	// 非法桶名交给 precheck 返回 400，不在这里建。
+	if backend.ValidateBucket(bucket) != nil {
+		return nil
+	}
+	if exists, _ := b.BucketExists(bucket); exists {
+		return nil
+	}
+	if !autoCreateAllowed(r, key) {
+		return nil
+	}
+	if err := b.EnsureBucket(bucket); err != nil {
+		return auth.InternalErrorf("自动创建桶失败: %v", err)
+	}
+	return nil
+}
+
+// autoCreateAllowed 明确列出「桶不存在时自动建桶」的触发范围：
+//   - PUT 对象（非 CopyObject、非 UploadPart）；
+//   - POST 分片（?uploads / ?uploadId）；
+//   - GET / HEAD（对象、桶列表）。
+//
+// DELETE 对象/桶、CopyObject、批量删除（?delete）一律不建桶。
+func autoCreateAllowed(r *http.Request, key string) bool {
+	q := r.URL.Query()
+	switch r.Method {
+	case http.MethodPut:
+		if key == "" {
+			return false // 显式 CreateBucket 走正常流程
+		}
+		if r.Header.Get("x-amz-copy-source") != "" {
+			return false // CopyObject 不建桶
+		}
+		return !q.Has("uploadId") // UploadPart：无任务不应建桶
+	case http.MethodPost:
+		return q.Has("uploads") || q.Has("uploadId")
+	case http.MethodGet, http.MethodHead:
+		return true
+	default:
+		return false
+	}
 }
 
 // parseCopySource 解析 x-amz-copy-source：形如 /<bucket>/<key>，可能整体 URL 编码，
