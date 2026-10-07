@@ -23,6 +23,20 @@ export interface Overview {
   version: string
 }
 
+export interface AccountList {
+  accounts: Account[]
+  endpoint?: string
+  region?: string
+  pathStyle?: boolean
+}
+
+export interface BucketInfo {
+  name: string
+  objects: number
+  bytes: number
+  isDefault: boolean
+}
+
 export interface OneTimeCredential {
   name: string
   ak: string
@@ -82,9 +96,31 @@ export const api = {
   login: (password: string) =>
     request<{ ok: boolean }>('/api/admin/login', jsonInit('POST', { password })),
   logout: () => request<{ ok: boolean }>('/api/admin/logout', jsonInit('POST', {})),
-  accounts: () => request<{ accounts: Account[] }>('/api/admin/accounts'),
+  accounts: () => request<AccountList>('/api/admin/accounts'),
   reveal: (name: string) =>
     request<{ accounts: Account[] }>(`/api/admin/accounts?reveal=${encodeURIComponent(name)}`),
+  listBuckets: (name: string) =>
+    request<{ buckets: BucketInfo[] }>(
+      `/api/admin/accounts/${encodeURIComponent(name)}/buckets`,
+    ),
+  createBucket: (name: string, bucket: string) =>
+    request<{ name: string }>(
+      `/api/admin/accounts/${encodeURIComponent(name)}/buckets`,
+      jsonInit('POST', { name: bucket }),
+    ),
+  deleteBucket: (name: string, bucket: string) =>
+    request<{ name: string; message: string }>(
+      `/api/admin/accounts/${encodeURIComponent(name)}/buckets/${encodeURIComponent(bucket)}`,
+      jsonInit('DELETE'),
+    ),
+  updateBucket: (
+    name: string,
+    patch: { bucket?: string; autoCreateBucket?: boolean },
+  ) =>
+    request<Account>(
+      `/api/admin/accounts/${encodeURIComponent(name)}/bucket`,
+      jsonInit('PATCH', patch),
+    ),
   create: (name: string, note: string, bucket?: string, autoCreateBucket?: boolean) =>
     request<OneTimeCredential>(
       '/api/admin/accounts',
