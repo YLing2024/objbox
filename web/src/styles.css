@@ -148,6 +148,9 @@ textarea {
 
 .topbar .right {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .content {
@@ -385,26 +388,9 @@ button.link:disabled {
   word-break: break-all;
 }
 
-.cors {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 24px;
-  padding: 16px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
 .cors-editor {
   display: flex;
   flex-direction: column;
   gap: 4px;
   color: var(--muted);
-}
-
-.cors-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
 }

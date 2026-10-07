@@ -9,6 +9,7 @@ import {
   type OneTimeCredential,
   type Overview,
 } from './api'
+import { firstInvalid, parseOrigins } from './cors'
 
 // ---- 小工具 ----
 
@@ -295,56 +296,12 @@ function BucketPanel({
   )
 }
 
-// ---- 跨域白名单（CORS） ----
+// ---- 设置弹窗 ----
 
-// validateOrigin 与后端 settings.Normalize 规则一致，仅用于就地提示。
-function validateOrigin(raw: string): string {
-  const s = raw.trim()
-  if (!s) {
-    return '不能为空'
-  }
-  let u: URL
-  try {
-    u = new URL(s.replace(/\/$/, ''))
-  } catch {
-    return '不是合法的 URL'
-  }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-    return '只支持 http 或 https'
-  }
-  if (!u.hostname) {
-    return '缺少主机名'
-  }
-  if (u.username || u.password) {
-    return '不得包含用户名或密码'
-  }
-  if (u.pathname !== '' && u.pathname !== '/') {
-    return '只能填 scheme://host[:port]，不得带路径'
-  }
-  if (u.search || u.hash) {
-    return '不得带查询或片段'
-  }
-  if (u.port && (Number(u.port) < 1 || Number(u.port) > 65535)) {
-    return '端口号非法'
-  }
-  return ''
-}
-
-// parseOrigins 把文本域的每一行（也支持逗号分隔）解析为「来源 + 行号」。
-function parseOrigins(text: string): { origin: string; line: number }[] {
-  const out: { origin: string; line: number }[] = []
-  text.split('\n').forEach((line, i) => {
-    line.split(',').forEach((token) => {
-      const t = token.trim()
-      if (t) {
-        out.push({ origin: t, line: i + 1 })
-      }
-    })
-  })
-  return out
-}
-
-function CORSPanel() {
+// SettingsModal 是全站设置（当前仅跨域白名单），入口在标题栏「设置」。
+// 复用页面既有的 overlay + card modal + actions 结构；遮罩或「关闭」关闭，
+// 未保存的编辑随组件卸载丢弃，重新打开会重新拉取已保存值。
+function SettingsModal({ onClose }: { onClose: () => void }) {
   const [value, setValue] = useState('')
   const [effective, setEffective] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -370,15 +327,7 @@ function CORSPanel() {
     void load()
   }, [load])
 
-  const validationError = (() => {
-    for (const item of parseOrigins(value)) {
-      const problem = validateOrigin(item.origin)
-      if (problem) {
-        return `第 ${item.line} 行「${item.origin}」：${problem}`
-      }
-    }
-    return ''
-  })()
+  const validationError = firstInvalid(value)
 
   const save = async () => {
     if (validationError) {
@@ -393,7 +342,6 @@ function CORSPanel() {
       setEffective(r.corsOrigins)
       setValue(r.corsOrigins.join('\n'))
       setSaved(true)
-      window.setTimeout(() => setSaved(false), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败')
     } finally {
@@ -402,46 +350,46 @@ function CORSPanel() {
   }
 
   return (
-    <section className="cors">
-      <div className="section-head">
-        <span className="section-title">跨域白名单（CORS）</span>
-      </div>
-      <p className="muted">
-        允许这些来源的网页在浏览器里直接读写本对象存储（预签名直传/直下）。留空表示关闭跨域。请只填你自己的前端域名。
-      </p>
-      <label className="cors-editor">
-        来源（每行一个，也支持逗号分隔）
-        <textarea
-          rows={4}
-          value={value}
-          spellCheck={false}
-          placeholder="https://app.example.com"
-          onChange={(e) => {
-            setValue(e.target.value)
-            setSaved(false)
-          }}
-        />
-      </label>
-      {validationError ? <p className="error">{validationError}</p> : null}
-      {error ? <p className="error">{error}</p> : null}
-      <div className="section-head">
-        <span className="muted">
+    <div className="overlay" onClick={onClose}>
+      <div className="card modal" onClick={(e) => e.stopPropagation()}>
+        <h2>设置</h2>
+        <div className="section-head">
+          <span className="section-title">跨域白名单（CORS）</span>
+        </div>
+        <p className="muted">
+          允许这些来源的网页在浏览器里直接读写本对象存储（预签名直传/直下）。留空表示关闭跨域。请只填你自己的前端域名。
+        </p>
+        <label className="cors-editor">
+          来源（每行一个，也支持逗号分隔）
+          <textarea
+            rows={4}
+            value={value}
+            spellCheck={false}
+            placeholder="https://app.example.com"
+            onChange={(e) => {
+              setValue(e.target.value)
+              setSaved(false)
+              setError('')
+            }}
+          />
+        </label>
+        {validationError ? <p className="error">{validationError}</p> : null}
+        {error ? <p className="error">{error}</p> : null}
+        <p className="muted">
           当前生效：
           {loading ? '加载中…' : effective.length > 0 ? effective.join('、') : '未开启跨域'}
-        </span>
-        <span className="cors-actions">
-          {saved ? <span className="ok">已保存并即时生效</span> : null}
-          <button
-            type="button"
-            className="primary"
-            disabled={saving || !!validationError}
-            onClick={() => void save()}
-          >
+        </p>
+        {saved ? <p className="ok">已保存并即时生效</p> : null}
+        <div className="actions">
+          <button type="button" onClick={onClose}>
+            关闭
+          </button>
+          <button type="button" className="primary" disabled={saving} onClick={() => void save()}>
             保存
           </button>
-        </span>
+        </div>
       </div>
-    </section>
+    </div>
   )
 }
 
@@ -501,11 +449,13 @@ function TopBar({
   user,
   overview,
   onLogout,
+  onOpenSettings,
 }: {
   mode: AuthMode
   user: string
   overview: Overview | null
   onLogout: () => void
+  onOpenSettings: () => void
 }) {
   return (
     <header className="topbar">
@@ -516,6 +466,9 @@ function TopBar({
         <span>总用量 {formatBytes(overview ? overview.totalUsageBytes : 0)}</span>
       </div>
       <div className="right">
+        <button type="button" className="link" onClick={onOpenSettings}>
+          设置
+        </button>
         {mode === 'sso' ? (
           <span className="muted">当前用户：{user || '未知'}</span>
         ) : (
@@ -969,7 +922,6 @@ function AccountsView({
           ) : null}
         </tbody>
       </table>
-      <CORSPanel />
     </main>
   )
 }
@@ -1004,6 +956,7 @@ export default function App() {
   const [detail, setDetail] = useState<Account | null>(null)
   const [bucketTarget, setBucketTarget] = useState<Account | null>(null)
   const [secret, setSecret] = useState<SecretState | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [shown, setShown] = useState<Record<string, boolean>>({})
 
@@ -1162,7 +1115,13 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar mode={mode} user={user} overview={overview} onLogout={() => void onLogout()} />
+      <TopBar
+        mode={mode}
+        user={user}
+        overview={overview}
+        onLogout={() => void onLogout()}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
       {error ? <div className="banner error">{error}</div> : null}
       <AccountsView
         accounts={accounts}
@@ -1240,6 +1199,7 @@ export default function App() {
           onClose={() => setSecret(null)}
         />
       ) : null}
+      {settingsOpen ? <SettingsModal onClose={() => setSettingsOpen(false)} /> : null}
     </div>
   )
 }
