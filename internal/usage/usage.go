@@ -14,8 +14,16 @@ import (
 
 // DirSize 递归统计 dir 下所有普通文件的字节数。目录不存在时返回 0。
 func DirSize(dir string) (int64, error) {
-	var total int64
-	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+	_, total, err := DirStats(dir)
+	return total, err
+}
+
+// DirStats 递归统计 dir 下普通文件的个数与字节数。目录不存在时返回 0/0。
+//
+// 对象在 objbox 里一一对应一个磁盘文件，因此文件数即对象数；桶目录内的
+// 目录只是 key 的前缀，不计入个数。
+func DirStats(dir string) (files int, bytes int64, err error) {
+	err = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
@@ -29,13 +37,14 @@ func DirSize(dir string) (int64, error) {
 		if err != nil {
 			return err
 		}
-		total += info.Size()
+		files++
+		bytes += info.Size()
 		return nil
 	})
 	if err != nil {
-		return 0, fmt.Errorf("usage: 统计 %s 失败: %w", dir, err)
+		return 0, 0, fmt.Errorf("usage: 统计 %s 失败: %w", dir, err)
 	}
-	return total, nil
+	return files, bytes, nil
 }
 
 type cacheEntry struct {
