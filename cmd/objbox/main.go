@@ -3,7 +3,7 @@
 // 子命令：
 //
 //	objbox serve   -addr 127.0.0.1:18930 -data /var/lib/objbox
-//	objbox account add <name> [-note "..."] [-readonly] [-data DIR]
+//	objbox account add <name> [-note "..."] [-readonly] [-bucket NAME] [-no-bucket] [-data DIR]
 //	objbox account list [-show-secret] [-data DIR]
 //	objbox account rotate <name> [-data DIR]
 //	objbox account disable|enable <name> [-data DIR]
@@ -28,6 +28,7 @@ import (
 
 	"github.com/YLing2024/objbox/internal/account"
 	"github.com/YLing2024/objbox/internal/auth"
+	"github.com/YLing2024/objbox/internal/backend"
 	"github.com/YLing2024/objbox/internal/server"
 	"github.com/YLing2024/objbox/internal/usage"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -48,7 +49,7 @@ var defaultDataDir = "/var/lib/objbox"
 
 const (
 	// accountAddUsage 是 account add 的确切用法；账号名不合法时原样提示。
-	accountAddUsage = "用法: objbox account add <name> [-note ...] [-readonly] [-data DIR]\n"
+	accountAddUsage = "用法: objbox account add <name> [-note ...] [-readonly] [-bucket NAME] [-no-bucket] [-data DIR]\n"
 	// nameRuleText 与 account.NameRe 对应。
 	nameRuleText = "账号名须为小写字母或数字开头，后接小写字母/数字/连字符，长度 1-32（不得以 - 开头）"
 )
@@ -85,7 +86,7 @@ func usageText(w io.Writer) {
 
 用法:
   objbox serve   -addr 127.0.0.1:18930 -data /var/lib/objbox
-  objbox account add <name> [-note "..."] [-readonly] [-data DIR]
+  objbox account add <name> [-note "..."] [-readonly] [-bucket NAME] [-no-bucket] [-data DIR]
   objbox account list [-show-secret] [-data DIR]
   objbox account rotate <name> [-data DIR]
   objbox account disable|enable <name> [-data DIR]
@@ -150,6 +151,8 @@ func runAccount(args []string, stdout, stderr io.Writer) int {
 	case "add":
 		note := fs.String("note", "", "备注")
 		readonly := fs.Bool("readonly", false, "只读账号")
+		bucket := fs.String("bucket", "", "默认桶名（缺省为账号名）")
+		noBucket := fs.Bool("no-bucket", false, "不自动建桶（autoCreateBucket=false）")
 		if len(rest) < 1 {
 			fmt.Fprint(stderr, accountAddUsage)
 			return 2
@@ -164,8 +167,20 @@ func runAccount(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stderr, accountAddUsage)
 			return 2
 		}
+		bucketName := *bucket
+		if bucketName == "" {
+			bucketName = name
+		}
+		// 显式指定桶名，或默认要建桶时，桶名都必须合法；不放宽校验。
+		if *bucket != "" || !*noBucket {
+			if err := backend.ValidateBucket(bucketName); err != nil {
+				fmt.Fprintf(stderr, "桶名 %q 不合法：%v\n", bucketName, err)
+				fmt.Fprint(stderr, accountAddUsage)
+				return 2
+			}
+		}
 		warnDefaultDataDir(stderr, *dataDir, flagWasSet(fs, "data"))
-		return accountAdd(stdout, stderr, *dataDir, name, *note, *readonly)
+		return accountAdd(stdout, stderr, *dataDir, name, *note, *readonly, bucketName, *noBucket)
 
 	case "list":
 		showSecret := fs.Bool("show-secret", false, "显示完整 SK")
@@ -248,20 +263,36 @@ func loadStore(stderr io.Writer, dataDir string) (*account.Store, int) {
 	return store, 0
 }
 
-func accountAdd(stdout, stderr io.Writer, dataDir, name, note string, readonly bool) int {
+func accountAdd(stdout, stderr io.Writer, dataDir, name, note string, readonly bool, bucket string, noBucket bool) int {
 	store, code := loadStore(stderr, dataDir)
 	if store == nil {
 		return code
 	}
-	a, err := store.Add(name, note, readonly)
+	opts := account.AddOptions{Bucket: bucket}
+	if noBucket {
+		disabled := false
+		opts.AutoCreateBucket = &disabled
+	}
+	a, err := store.AddAccount(name, note, readonly, opts)
 	if err != nil {
 		fmt.Fprintf(stderr, "%v\n", err)
 		return 1
+	}
+	// 建账号即建桶：autoCreateBucket=true 时预建默认桶；失败则回滚账号创建，
+	// 保证「建完就能用」。桶已存在视为成功（幂等）。
+	if a.AutoCreateBucket {
+		if err := backend.EnsureBucketAt(a.Root, a.Bucket); err != nil {
+			_ = store.Remove(name)
+			fmt.Fprintf(stderr, "创建默认桶失败，已回滚账号创建: %v\n", err)
+			return 1
+		}
 	}
 	fmt.Fprintf(stdout, "name:     %s\n", a.Name)
 	fmt.Fprintf(stdout, "AK:       %s\n", a.AK)
 	fmt.Fprintf(stdout, "SK:       %s   （仅本次显示，请立即妥善保存）\n", a.SK)
 	fmt.Fprintf(stdout, "root:     %s\n", a.Root)
+	fmt.Fprintf(stdout, "bucket:   %s\n", a.Bucket)
+	fmt.Fprintf(stdout, "auto-create-bucket: %v\n", a.AutoCreateBucket)
 	fmt.Fprintf(stdout, "data:     %s\n", store.DataDir())
 	fmt.Fprintf(stdout, "readonly: %v\n", a.Readonly)
 	if a.Note != "" {
@@ -281,7 +312,7 @@ func accountList(stdout, stderr io.Writer, dataDir string, showSecret bool) int 
 	}
 	accounts := store.List()
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tAK\tSK\tROOT\tSTATUS\tREADONLY\tUSAGE(B)")
+	fmt.Fprintln(w, "NAME\tAK\tSK\tBUCKET\tAUTO-CREATE\tROOT\tSTATUS\tREADONLY\tUSAGE(B)")
 	for _, a := range accounts {
 		sk := account.MaskSecret(a.SK)
 		if showSecret {
@@ -295,8 +326,8 @@ func accountList(stdout, stderr io.Writer, dataDir string, showSecret bool) int 
 		if size, err := usage.DirSize(a.Root); err == nil {
 			usageStr = fmt.Sprintf("%d", size)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%v\t%s\n",
-			a.Name, a.AK, sk, a.Root, status, a.Readonly, usageStr)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\t%s\t%s\t%v\t%s\n",
+			a.Name, a.AK, sk, a.Bucket, a.AutoCreateBucket, a.Root, status, a.Readonly, usageStr)
 	}
 	w.Flush()
 	return 0
