@@ -30,6 +30,8 @@ it does not aim to replace platform-style systems.
 
 - **Account isolation**: each account has its own root directory; cross-account access and
   "bucket does not exist" return byte-for-byte identical 403 responses.
+- **Automatic bucket creation**: one account per app, and creating an account creates its bucket;
+  clients only need AK/SK — set Bucket to anything, or to the account name.
 - **AK/SK auth**: standard SigV4 `Authorization` header plus presigned URLs for GET / PUT.
 - **Read-only and disabled**: an account can be read-only (writes rejected) or disabled (all requests
   rejected), effective immediately.

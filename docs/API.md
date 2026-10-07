@@ -78,6 +78,54 @@
   超出返回 `403 QuotaExceeded`。删除对象后用量下降，可继续写入。
 - `objbox account quota <name> <bytes>` 设置配额，`<bytes>=0` 表示不限。
 
+### 桶自动创建
+
+objbox 的隔离模型是「账号 = 独立存储空间」，但真实客户端（思源笔记、rclone、各类 App）
+不会主动建桶，而是直接读写某个桶里的对象。为消除「先手工建桶」这一步摩擦，新建账号默认
+`autoCreateBucket = true`、默认桶名 = 账号名；建账号（CLI 或管理 API）时若开启该开关，
+会在账号 root 下预建默认桶，桶已存在视为成功（幂等）。
+
+请求通过 SigV4 认证并按账号分发后，若请求指向的桶在该账号 root 下不存在，按下表处理：
+
+| 操作 | 桶不存在时（autoCreateBucket=true） |
+|---|---|
+| PUT Object | 先建桶，再正常写入 |
+| POST 分片（`?uploads` / `?uploadId`） | 先建桶，再正常处理 |
+| GET / HEAD Object | 先建桶，再按「对象不存在」返回 `404 NoSuchKey` |
+| GET Bucket（ListObjects V1/V2）、HEAD Bucket | 先建桶，再返回空列表 / 200 |
+| DELETE Object | **不建桶**；桶不存在返回 `404 NoSuchBucket` |
+| DELETE Bucket | **不建桶**；桶不存在返回 `404 NoSuchBucket` |
+| CopyObject（源或目标桶） | **不建桶**；桶不存在返回 `403 AccessDenied` |
+
+- `autoCreateBucket = false` 的账号完全不自动建桶：跨账号访问与桶不存在继续返回
+  **逐字节相同的** `403 AccessDenied`（M0 反枚举语义原样保留）。
+- 桶名合法性校验**不放宽**：不符合 `ValidateBucket` 规则的桶名照旧返回 `400`。
+- 自动建桶只发生在当前账号自己的 root 下；创建失败返回 `5xx`，不会静默当作成功。
+- **错误码变化**：`autoCreateBucket=true` 时桶不存在不再返回 403，而是按上表返回
+  404 / 空列表 / 200；`autoCreateBucket=false` 时仍为 403。
+
+#### 接入示例（思源笔记 / rclone）
+
+只需 Endpoint / AK / SK；Bucket 一栏可填账号名或任意合法桶名，首次写入时自动创建。
+
+rclone：
+
+```ini
+# ~/.config/rclone/rclone.conf
+[objbox]
+type = s3
+provider = Other
+access_key_id = AKEXAMPLE...
+secret_access_key = SKEXAMPLE...
+endpoint = https://s3.example.com
+region = us-east-1
+force_path_style = true
+```
+
+思源笔记「设置 → 云端 → S3」：Endpoint 填 `https://s3.example.com`，Access Key / Secret Key
+填账号的 AK/SK，Bucket 填账号名或任意合法桶名，Region 填 `us-east-1`，路径风格开启。
+无需手工建桶。
+
 ## 明确不支持
 
 以下 S3 能力当前**不实现**，请求会得到 `NotImplemented`、`MethodNotAllowed` 或按普通 404/403 处理：
@@ -133,6 +181,10 @@
 | `NotImplemented` | 501 | 该 S3 能力未实现 |
 | `InternalError` | 500 | 服务内部错误 |
 
+> `autoCreateBucket=true` 时桶不存在不再返回 `AccessDenied`，而是按上表与「桶自动创建」
+> 章节的触发范围返回 `NoSuchBucket` / `NoSuchKey` / 空列表；`autoCreateBucket=false`
+> 时保持 403 反枚举语义。
+
 ## 管理 API（`/api/admin/*`，JSON）
 
 管理面认证由环境变量 `AUTH_MODE` 决定（`builtin` 口令会话 / `sso` 信任 `X-Auth-User`）。
@@ -152,6 +204,10 @@
 | GET | `/api/admin/overview` | `{authMode, accounts, totalUsageBytes, version}` |
 
 - 除 `login` 外均需鉴权：`builtin` 校验签名 cookie，`sso` 校验 `X-Auth-User`，未通过返回 401。
+- `POST /api/admin/accounts` 请求体可选字段：`bucket`（默认 = 账号名）、
+  `autoCreateBucket`（默认 `true`）；`autoCreateBucket=true` 时创建成功后预建默认桶，
+  非法桶名返回 `400`，桶已存在视为成功。列表/详情响应含 `bucket`、`autoCreateBucket`、
+  `bucketExists`（除 `?reveal=<name>` 外不返回 SK）。
 - `builtin` 会话 cookie `objbox_admin` 带 `HttpOnly; SameSite=Lax; Path=/`；请求为 HTTPS
   （TLS 或 `X-Forwarded-Proto: https`）时另带 `Secure`，本地 http 调试不带。
 - 会话令牌为无状态签名 `base64(user|expiry|epoch).HMAC`；`<data>/admin.json` 记录 `sessionEpoch`，
