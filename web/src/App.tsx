@@ -21,11 +21,13 @@ function useHashRoute(): [string, (r: string) => void] {
     window.addEventListener('hashchange', onChange)
     return () => window.removeEventListener('hashchange', onChange)
   }, [])
-  const navigate = (r: string) => {
+  // 注意：navigate 必须保持**稳定引用**。它被 load()（useCallback 依赖）与 useEffect([load]) 间接引用，
+  // 每次渲染新建函数会让 load 每次换身份 → effect 每次重跑 → 首屏无限重刷（表现为登录框一闪一闪 + 接口风暴）。
+  const navigate = useCallback((r: string) => {
     if (read() !== r) {
       window.location.hash = r
     }
-  }
+  }, [])
   return [route, navigate]
 }
 
