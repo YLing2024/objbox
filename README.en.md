@@ -41,7 +41,7 @@ it does not aim to replace platform-style systems.
 - **Presigned URLs**: up to 7 days, `Range` supported.
 - **Multipart upload**: streamed to disk, concurrent parts, expired uploads cleaned on startup.
 - **Quota**: per-account write byte limit, exceeding it returns `403 QuotaExceeded`.
-- **Cross-origin allowlist (CORS)**: a whitelist for browser-side presigned upload/download, configured in the admin page and effective immediately on save.
+- **Cross-origin allowlist (CORS)**: a whitelist for browser-side presigned upload/download, configured in the admin page **Settings** dialog and effective immediately on save.
 - **Admin page**: embedded React page, with `AUTH_MODE=builtin` (self-managed password) or `sso`
   (trusts the gateway). One click shows an account's connection details and copies them
   (Endpoint / AK / SK / Bucket / Region / Path-style plus an rclone example); the detail window opens
@@ -177,7 +177,7 @@ When a browser talks to the object store directly (**presigned PUT/GET**, or a f
 API with `fetch`), requests carry an `Origin` and trigger a CORS preflight. objbox's cross-origin
 allowlist is configured in the **admin page**, not by editing environment variables.
 
-1. Open the admin page and scroll to the "**Cross-origin allowlist (CORS)**" section;
+1. Open the admin page, click **Settings** in the top bar, and use the "**Cross-origin allowlist (CORS)**" field in the dialog;
 2. Put one origin per line (commas also work), e.g. `https://app.example.com`;
 3. Click "Save" — you get "saved and effective immediately"; **no restart needed**.
 
