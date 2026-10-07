@@ -71,6 +71,22 @@
 预签名请求同样受账号隔离与只读约束；过期一律返回 `403 AccessDenied`（`Request has expired`）。
 可用 `objbox presign -account <name> -bucket <b> -key <k> [-method GET|PUT] [-expires 3600]` 生成。
 
+### 跨域（CORS）
+
+objbox 支持一份**全局跨域白名单**（在管理页「跨域白名单（CORS）」配置，或由环境变量
+`CORS_ORIGINS` 作为首次默认值），生效范围是 S3 API 路径（桶 / 对象的所有动词，含预签名请求）。
+管理面 `/api/admin/*` 不放开跨域。
+
+| 行为 | 说明 |
+|---|---|
+| 预检（`OPTIONS` + `Origin` + `Access-Control-Request-Method`） | 命中白名单直接回 `204` + CORS 头，**不要求签名/认证**；未命中不回 CORS 头，交回正常流程 |
+| 命中响应头 | `Access-Control-Allow-Origin` 回显请求来源（不用 `*`）、`Allow-Credentials: true`、`Allow-Methods: OPTIONS, GET, HEAD, PUT, POST, DELETE`、`Allow-Headers` 覆盖 `Authorization` 与 `x-amz-*`、`Expose-Headers` 覆盖 `ETag` 与 `x-amz-*`、`Max-Age: 3600` |
+| `Vary` | 所有 S3 响应带 `Vary: Origin` |
+| 普通请求 | 签名校验、权限与桶策略完全不变；命中来源时附带上述 CORS 头 |
+
+来源格式：`scheme://host` 或 `scheme://host:port`，`scheme` 限 `http/https`；非法项返回 `400`
+并指明第 N 行。留空 = 关闭。设置文件（`settings.json`，0600，原子写）优先于环境变量。
+
 ### 用量与配额
 
 - `objbox account list` 的 `USAGE(B)` 列为账号 root 下所有桶目录的递归大小（不含 `.objbox` 内部目录）。
@@ -130,9 +146,10 @@ force_path_style = true
 
 以下 S3 能力当前**不实现**，请求会得到 `NotImplemented`、`MethodNotAllowed` 或按普通 404/403 处理：
 
-- 桶级配置类 API：versioning、ACL、CORS、lifecycle、policy、tagging、encryption、
+- 桶级配置类 API：versioning、ACL、**按桶 CORS（`?cors` 子资源）**、lifecycle、policy、tagging、encryption、
   logging、notification、replication、website、inventory、analytics、metrics、
   accelerate、requestPayment、object-lock、public-access-block、ownership-controls。
+  （全局跨域白名单见上「跨域（CORS）」一节，与 S3 的按桶 CORS 配置 API 不同。）
 - 对象版本：`?versioning`、`?versions`、`?versionId=` 的版本语义（`versionId` 被忽略）。
 - 对象级 ACL、retention、legal-hold、restore、select、torrent、tagging。
 - 浏览器表单直传（`POST /<bucket>` 且非 `?delete`）。
@@ -206,6 +223,8 @@ force_path_style = true
 | DELETE | `/api/admin/accounts/<name>/buckets/<bucket>` | 删除**空**桶；非空 `409`，不存在 `404` |
 | PATCH | `/api/admin/accounts/<name>/bucket` | 改默认桶名 / 自动建桶开关，body `{bucket?, autoCreateBucket?}` |
 | GET | `/api/admin/overview` | `{authMode, accounts, totalUsageBytes, version}` |
+| GET | `/api/admin/settings` | 读服务端设置：`{corsOrigins, corsEnabled, corsSource}` |
+| PUT | `/api/admin/settings` | 写跨域白名单，body `{corsOrigins: [...]}`；校验失败 `400`（指明第 N 行） |
 
 - 除 `login` 外均需鉴权：`builtin` 校验签名 cookie，`sso` 校验 `X-Auth-User`，未通过返回 401。
 - `POST /api/admin/accounts` 请求体可选字段：`bucket`（默认 = 账号名）、
@@ -254,3 +273,22 @@ PATCH /api/admin/accounts/demo/bucket
   `GET /assets/*` 返回 JS/CSS；带 S3 签名的请求仍按协议层处理。
 - 所有管理 API 调用写入 `<data>/admin-audit.log`（0600，一行一条：时间 / 操作 / 账号 / 来源 IP），不记录明文 SK。
 - 账号表改动与 CLI 共用同一套原子读写逻辑（临时文件 + rename），服务端热重载立即生效。
+
+#### 设置接口（读写跨域白名单）
+
+```http
+GET /api/admin/settings
+200 {"corsOrigins":["https://app.example.com"],"corsEnabled":true,"corsSource":"settings"}
+# corsSource: settings（来自设置文件）/ env（来自环境变量 CORS_ORIGINS）/ none（关闭）
+
+PUT /api/admin/settings
+{"corsOrigins":["https://app.example.com","http://127.0.0.1:5173"]}
+200 {"corsOrigins":[...],"corsEnabled":true,"corsSource":"settings"}
+# 非法来源 → 400 {"error":"第 2 行来源非法：ftp://bad.example.com（只支持 http 或 https）"}
+# 缺字段 → 400 {"error":"缺少 corsOrigins 字段"}
+```
+
+- 写入为原子替换（临时文件 + fsync + rename），**保存即生效**，无需重启；`settings.json` 权限 0600。
+- 文件损坏（JSON 非法或含非法来源）时，启动会用默认值并把原文件保留为 `settings.json.bak`，
+  不影响服务启动。
+- 审计动作 `settings.get` / `settings.update`。

@@ -34,6 +34,7 @@ objbox 只补其中很薄的一层：**账号 + AK/SK + 隔离**。它复用标�
 - **预签名**：有效期上限 7 天，支持 `Range`。
 - **分片上传**：流式落盘、并发分片、启动时清理过期任务。
 - **配额**：按账号限制写入字节数，超出返回 `403 QuotaExceeded`。
+- **跨域白名单（CORS）**：浏览器端预签名直传 / 直下可用的跨域白名单，管理页配置、保存即生效。
 - **管理页**：内嵌 React 管理页，支持 `AUTH_MODE=builtin`（自带口令）与 `sso`（信任网关）。
   账号一键查看详情并复制接入信息（Endpoint / AK / SK / Bucket / Region / Path-style 与 rclone 示例），
   新建账号后自动打开；账号内可建桶 / 看桶 / 删桶并查看对象数与占用，默认桶与自动建桶开关可就地修改。
@@ -160,6 +161,44 @@ URL=$(./objbox presign -account demo -bucket my-bucket -key big.bin \
 curl -o big.bin "$URL"
 ```
 
+## 跨域直连（浏览器端使用）
+
+浏览器里直接读写本对象存储（**预签名直传 / 直下**，或前端用 `fetch` 直连 S3 API）时，
+请求会带 `Origin` 并触发 CORS 预检。objbox 的跨域白名单在**管理页**配置，不在环境变量里改。
+
+1. 打开管理页，页面底部「**跨域白名单（CORS）**」一节；
+2. 文本域里每行填一个来源（也支持逗号分隔），如 `https://app.example.com`；
+3. 点「保存」，提示「已保存并即时生效」——**无需重启**。
+
+规则与说明：
+
+- 来源必须是 `scheme://host` 或 `scheme://host:port`，`scheme` 只支持 `http` / `https`；
+  非法项会当场报错并指出是哪一行，不会被静默丢弃。
+- 留空表示**关闭跨域**。
+- 生效优先级：**管理页保存的值（`settings.json`）优先**；设置文件里还没有该键时，用环境变量
+  `CORS_ORIGINS`（逗号分隔）作为**首次默认值**；两者都没有 = 关闭。
+- 命中白名单的预检（`OPTIONS` + `Origin` + `Access-Control-Request-Method`）直接回 `204`，
+  **不要求任何签名/认证**；普通请求的签名校验、权限与桶策略完全不变。
+- 命中时回显请求来源（不使用 `*`）、允许携带凭据，并暴露 `ETag` 等响应头，便于浏览器端做
+  校验与断点续传。
+- 生效范围是 S3 API 路径（桶 / 对象的所有动词，含预签名请求）；管理面自身不放开跨域。
+- 按桶的 S3 CORS 子资源（`PUT/GET/DELETE /<bucket>?cors`）本次**未实现**，跨域只走这份全局白名单。
+
+预签名直传示例（CLI 生成 URL，浏览器 `fetch` 直接 PUT）：
+
+```bash
+./objbox presign -account demo -bucket my-bucket -key upload/photo.jpg \
+  -method PUT -expires 3600 -endpoint https://s3.example.com
+```
+
+```js
+// 浏览器端：把上面的 URL 原样 PUT 上去即可（无需 AK/SK，签名在 URL 里）
+await fetch(PRESIGNED_URL, { method: 'PUT', body: file })
+```
+
+> **安全提示**：白名单里**只填你自己的前端域名**，不要填 `*`。命中来源的网页可以携带凭据直连
+> 本对象存储；预签名 URL 有时效，等同于临时凭证，请勿泄露或写入公开页面。
+
 ## 配置
 
 环境变量：
@@ -167,6 +206,7 @@ curl -o big.bin "$URL"
 | 变量 | 取值 | 默认 | 说明 |
 |---|---|---|---|
 | `AUTH_MODE` | `builtin` \| `sso` | `builtin` | **仅管理面**认证方式；S3 端点始终走 AK/SK |
+| `CORS_ORIGINS` | 逗号分隔的来源 | 空 | 跨域白名单的**首次默认值**；仅在设置文件还没有该键时生效，已在管理页保存过就以设置文件为准 |
 | `OBJBOX_PUBLIC_ENDPOINT` | URL | 空 | 管理页详情窗口展示 / 复制的对外 Endpoint；留空则按 `X-Forwarded-Proto` + `X-Forwarded-Host`（或 `Host`）运行时推导 |
 
 常用命令行参数（均为进程启动参数，不是环境变量）：

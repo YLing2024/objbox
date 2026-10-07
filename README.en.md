@@ -41,6 +41,7 @@ it does not aim to replace platform-style systems.
 - **Presigned URLs**: up to 7 days, `Range` supported.
 - **Multipart upload**: streamed to disk, concurrent parts, expired uploads cleaned on startup.
 - **Quota**: per-account write byte limit, exceeding it returns `403 QuotaExceeded`.
+- **Cross-origin allowlist (CORS)**: a whitelist for browser-side presigned upload/download, configured in the admin page and effective immediately on save.
 - **Admin page**: embedded React page, with `AUTH_MODE=builtin` (self-managed password) or `sso`
   (trusts the gateway). One click shows an account's connection details and copies them
   (Endpoint / AK / SK / Bucket / Region / Path-style plus an rclone example); the detail window opens
@@ -170,6 +171,49 @@ URL=$(./objbox presign -account demo -bucket my-bucket -key big.bin \
 curl -o big.bin "$URL"
 ```
 
+## Direct browser access (CORS)
+
+When a browser talks to the object store directly (**presigned PUT/GET**, or a frontend calling the S3
+API with `fetch`), requests carry an `Origin` and trigger a CORS preflight. objbox's cross-origin
+allowlist is configured in the **admin page**, not by editing environment variables.
+
+1. Open the admin page and scroll to the "**Cross-origin allowlist (CORS)**" section;
+2. Put one origin per line (commas also work), e.g. `https://app.example.com`;
+3. Click "Save" — you get "saved and effective immediately"; **no restart needed**.
+
+Rules and notes:
+
+- An origin must be `scheme://host` or `scheme://host:port`, with `scheme` limited to `http` / `https`;
+  an invalid entry is reported immediately, pointing at the offending line, and is never silently dropped.
+- Leaving it empty **disables CORS**.
+- Precedence: the value saved in the admin page (`settings.json`) wins; when that key is absent, the
+  environment variable `CORS_ORIGINS` (comma-separated) is used as the **initial default**; neither = off.
+- A whitelisted preflight (`OPTIONS` + `Origin` + `Access-Control-Request-Method`) returns `204`
+  directly and **requires no signature/authentication**; normal requests keep exactly the same
+  signature checks, permissions and bucket policy.
+- On a match the request origin is echoed back (not `*`), credentials are allowed, and headers such as
+  `ETag` are exposed so the browser can do validation and range resumption.
+- The scope is the S3 API paths (all bucket/object verbs, including presigned requests); the admin plane
+  itself is not opened up for cross-origin access.
+- The per-bucket S3 CORS sub-resource (`PUT/GET/DELETE /<bucket>?cors`) is **not implemented**;
+  cross-origin access uses only this global allowlist.
+
+Presigned direct upload (generate the URL with the CLI, then `fetch` it from the browser):
+
+```bash
+./objbox presign -account demo -bucket my-bucket -key upload/photo.jpg \
+  -method PUT -expires 3600 -endpoint https://s3.example.com
+```
+
+```js
+// Browser side: just PUT to the URL above (no AK/SK needed; the signature is in the URL)
+await fetch(PRESIGNED_URL, { method: 'PUT', body: file })
+```
+
+> **Security note**: put **only your own frontend origins** in the allowlist, never `*`. Whitelisted
+> origins may talk to the store with credentials; a presigned URL is time-limited and acts like a
+> temporary credential — do not leak it or embed it in public pages.
+
 ## Configuration
 
 Environment variables:
@@ -177,6 +221,7 @@ Environment variables:
 | Variable | Values | Default | Description |
 |---|---|---|---|
 | `AUTH_MODE` | `builtin` \| `sso` | `builtin` | **Admin-plane only** auth; S3 endpoints always use AK/SK |
+| `CORS_ORIGINS` | comma-separated origins | empty | **Initial default** for the cross-origin allowlist; only used while the settings file has no such key — once saved in the admin page the settings file wins |
 | `OBJBOX_PUBLIC_ENDPOINT` | URL | empty | Public Endpoint shown/copied in the admin detail window; when empty it is derived at runtime from `X-Forwarded-Proto` + `X-Forwarded-Host` (or `Host`) |
 
 Common command-line flags (process startup flags, not environment variables):
