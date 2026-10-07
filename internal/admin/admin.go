@@ -413,10 +413,16 @@ func ClientIP(r *http.Request) string {
 
 // Audit 追加一条审计记录。op 为操作名，account 为目标账号（无则 "-"）。
 func (s *Service) Audit(op, account string, r *http.Request) {
+	s.AuditDetail(op, account, "", r)
+}
+
+// AuditDetail 追加一条带附加信息的审计记录（如创建账号时记录桶名）。
+// detail 会在写入前做与其它字段相同的去空白处理，避免日志注入。
+func (s *Service) AuditDetail(op, account, detail string, r *http.Request) {
 	if s.audit == nil {
 		return
 	}
-	s.audit.write(s.now(), op, account, ClientIP(r))
+	s.audit.write(s.now(), op, account, detail, ClientIP(r))
 }
 
 // Close 关闭审计日志文件。
@@ -444,11 +450,15 @@ func newAuditLog(path string) (*auditLog, error) {
 	return &auditLog{f: f}, nil
 }
 
-func (a *auditLog) write(now time.Time, op, account, ip string) {
+func (a *auditLog) write(now time.Time, op, account, detail, ip string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	line := fmt.Sprintf("%s op=%s account=%s ip=%s\n",
-		now.UTC().Format(time.RFC3339), sanitizeField(op), sanitizeField(account), sanitizeField(ip))
+	line := fmt.Sprintf("%s op=%s account=%s", now.UTC().Format(time.RFC3339),
+		sanitizeField(op), sanitizeField(account))
+	if detail != "" {
+		line += " detail=" + sanitizeField(detail)
+	}
+	line += " ip=" + sanitizeField(ip) + "\n"
 	_, _ = a.f.WriteString(line)
 }
 

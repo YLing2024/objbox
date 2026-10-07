@@ -8,6 +8,7 @@ import (
 
 	"github.com/YLing2024/objbox/internal/account"
 	adminauth "github.com/YLing2024/objbox/internal/admin"
+	"github.com/YLing2024/objbox/internal/backend"
 	"github.com/YLing2024/objbox/internal/usage"
 )
 
@@ -16,16 +17,19 @@ const Version = "0.3.0"
 
 // adminAccount 是管理面账号列表项；SK 默认掩码，仅在 reveal 时返回明文。
 type adminAccount struct {
-	Name       string `json:"name"`
-	AK         string `json:"ak"`
-	SK         string `json:"sk"`
-	Root       string `json:"root"`
-	UsageBytes int64  `json:"usageBytes"`
-	Status     string `json:"status"`
-	Note       string `json:"note"`
-	QuotaBytes int64  `json:"quotaBytes"`
-	Readonly   bool   `json:"readonly"`
-	Disabled   bool   `json:"disabled"`
+	Name             string `json:"name"`
+	AK               string `json:"ak"`
+	SK               string `json:"sk"`
+	Root             string `json:"root"`
+	UsageBytes       int64  `json:"usageBytes"`
+	Status           string `json:"status"`
+	Note             string `json:"note"`
+	QuotaBytes       int64  `json:"quotaBytes"`
+	Readonly         bool   `json:"readonly"`
+	Disabled         bool   `json:"disabled"`
+	Bucket           string `json:"bucket"`
+	AutoCreateBucket bool   `json:"autoCreateBucket"`
+	BucketExists     bool   `json:"bucketExists"`
 }
 
 func accountStatus(a *account.Account) string {
@@ -42,16 +46,19 @@ func accountStatus(a *account.Account) string {
 func newAdminAccount(a *account.Account, sk string) adminAccount {
 	size, _ := usage.DirSize(a.Root)
 	return adminAccount{
-		Name:       a.Name,
-		AK:         a.AK,
-		SK:         sk,
-		Root:       a.Root,
-		UsageBytes: size,
-		Status:     accountStatus(a),
-		Note:       a.Note,
-		QuotaBytes: a.QuotaBytes,
-		Readonly:   a.Readonly,
-		Disabled:   a.Disabled,
+		Name:             a.Name,
+		AK:               a.AK,
+		SK:               sk,
+		Root:             a.Root,
+		UsageBytes:       size,
+		Status:           accountStatus(a),
+		Note:             a.Note,
+		QuotaBytes:       a.QuotaBytes,
+		Readonly:         a.Readonly,
+		Disabled:         a.Disabled,
+		Bucket:           a.Bucket,
+		AutoCreateBucket: a.AutoCreateBucket,
+		BucketExists:     backend.BucketExistsInRoot(a.Root, a.Bucket),
 	}
 }
 
@@ -185,10 +192,12 @@ func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name       string `json:"name"`
-		Note       string `json:"note"`
-		Readonly   bool   `json:"readonly"`
-		QuotaBytes *int64 `json:"quotaBytes"`
+		Name             string `json:"name"`
+		Note             string `json:"note"`
+		Readonly         bool   `json:"readonly"`
+		QuotaBytes       *int64 `json:"quotaBytes"`
+		Bucket           string `json:"bucket"`
+		AutoCreateBucket *bool  `json:"autoCreateBucket"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "请求体非法")
@@ -199,10 +208,36 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "账号名需匹配 [a-z0-9][a-z0-9-]{0,31}（不得以 - 开头）")
 		return
 	}
-	acct, err := s.store.Add(name, body.Note, body.Readonly)
+
+	bucket := strings.TrimSpace(body.Bucket)
+	resolved := bucket
+	if resolved == "" {
+		resolved = name
+	}
+	autoCreate := body.AutoCreateBucket == nil || *body.AutoCreateBucket
+	// 显式指定桶名，或默认要建桶时，桶名都必须合法；不放宽校验。
+	if bucket != "" || autoCreate {
+		if err := backend.ValidateBucket(resolved); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "桶名不合法："+err.Error())
+			return
+		}
+	}
+
+	acct, err := s.store.AddAccount(name, body.Note, body.Readonly, account.AddOptions{
+		Bucket:           body.Bucket,
+		AutoCreateBucket: body.AutoCreateBucket,
+	})
 	if err != nil {
 		writeJSONError(w, accountErrorStatus(err), err.Error())
 		return
+	}
+	// 建账号即建桶：失败则回滚账号创建，保证「建完就能用」。
+	if acct.AutoCreateBucket {
+		if err := backend.EnsureBucketAt(acct.Root, acct.Bucket); err != nil {
+			_ = s.store.Remove(name)
+			writeJSONError(w, http.StatusInternalServerError, "创建默认桶失败: "+err.Error())
+			return
+		}
 	}
 	if body.QuotaBytes != nil {
 		if err := s.store.SetQuota(name, *body.QuotaBytes); err != nil {
@@ -211,17 +246,19 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		}
 		acct.QuotaBytes = *body.QuotaBytes
 	}
-	s.admin.Audit("accounts.create", name, r)
+	s.admin.AuditDetail("accounts.create", name, "bucket="+acct.Bucket, r)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name":      acct.Name,
-		"ak":        acct.AK,
-		"sk":        acct.SK,
-		"root":      acct.Root,
-		"note":      acct.Note,
-		"readonly":  acct.Readonly,
-		"endpoint":  requestEndpoint(r),
-		"region":    "us-east-1",
-		"pathStyle": true,
+		"name":             acct.Name,
+		"ak":               acct.AK,
+		"sk":               acct.SK,
+		"root":             acct.Root,
+		"note":             acct.Note,
+		"readonly":         acct.Readonly,
+		"bucket":           acct.Bucket,
+		"autoCreateBucket": acct.AutoCreateBucket,
+		"endpoint":         requestEndpoint(r),
+		"region":           "us-east-1",
+		"pathStyle":        true,
 	})
 }
 
