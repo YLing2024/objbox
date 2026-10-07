@@ -201,13 +201,51 @@ force_path_style = true
 | POST | `/api/admin/accounts/<name>/enable` | 启用账号 |
 | PATCH | `/api/admin/accounts/<name>` | 修改 `note` / `quotaBytes` |
 | DELETE | `/api/admin/accounts/<name>` | 删除账号表条目（数据目录保留） |
+| GET | `/api/admin/accounts/<name>/buckets` | 该账号桶列表 `[{name, objects, bytes, isDefault}]`（只读，走磁盘统计） |
+| POST | `/api/admin/accounts/<name>/buckets` | 新建桶，body `{name}`；成功 `201`，已存在 `409`，非法桶名 `400` |
+| DELETE | `/api/admin/accounts/<name>/buckets/<bucket>` | 删除**空**桶；非空 `409`，不存在 `404` |
+| PATCH | `/api/admin/accounts/<name>/bucket` | 改默认桶名 / 自动建桶开关，body `{bucket?, autoCreateBucket?}` |
 | GET | `/api/admin/overview` | `{authMode, accounts, totalUsageBytes, version}` |
 
 - 除 `login` 外均需鉴权：`builtin` 校验签名 cookie，`sso` 校验 `X-Auth-User`，未通过返回 401。
 - `POST /api/admin/accounts` 请求体可选字段：`bucket`（默认 = 账号名）、
-  `autoCreateBucket`（默认 `true`）；`autoCreateBucket=true` 时创建成功后预建默认桶，
-  非法桶名返回 `400`，桶已存在视为成功。列表/详情响应含 `bucket`、`autoCreateBucket`、
-  `bucketExists`（除 `?reveal=<name>` 外不返回 SK）。
+  `autoCreateBucket`（默认 `true`）；`autoCreateBucket=true` 时创建成功后预建默认桶。
+  默认桶名非法（例如账号名不足 3 位）时**不失败**：自动回退到 `<账号名>-bucket`；
+  回退名仍不合法则跳过建桶、把 `autoCreateBucket` 置为 `false`，并在响应 `bucketNote`
+  里说明「未自动建桶」及原因。**只有显式指定了非法桶名才返回 `400`。**
+  列表/详情响应含 `bucket`、`autoCreateBucket`、`bucketExists`，以及顶层
+  `endpoint` / `region` / `pathStyle`（详情窗口连接信息用；除 `?reveal=<name>` 外不返回明文 SK）。
+- **Endpoint 运行时推导**：优先取环境变量 `OBJBOX_PUBLIC_ENDPOINT`（若设置），否则用请求的
+  `X-Forwarded-Proto` + `X-Forwarded-Host`（或 `Host`）拼出，仓库内不写死任何真实域名。
+- **桶管理**：桶名一律走 `ValidateBucket`（不放宽）；`GET buckets` 的 `objects` / `bytes`
+  由 `internal/usage` 统计，`isDefault` 标记账号 `bucket` 字段指向的桶；删除默认桶允许，
+  但**不会**自动重建（重建只发生在数据面请求时）。改默认桶 / 开关为原子落盘，热重载立即生效。
+  审计动作 `accounts.bucket.create` / `accounts.bucket.delete` / `accounts.bucket.update`
+  记录账号名与桶名；任何响应都不含明文 SK。
+
+#### 桶管理接口示例
+
+```http
+GET /api/admin/accounts/demo/buckets
+200 {"buckets":[{"name":"demo","objects":3,"bytes":4096,"isDefault":true}]}
+
+POST /api/admin/accounts/demo/buckets
+{"name":"photos"}
+201 {"name":"photos"}
+# 已存在 → 409 {"error":"桶已存在"}
+# 非法桶名 → 400 {"error":"桶名不合法：..."}
+
+DELETE /api/admin/accounts/demo/buckets/photos
+200 {"name":"photos","message":"桶已删除"}
+# 非空 → 409 {"error":"桶内还有对象，请先清空桶内对象再删除"}
+# 不存在 → 404 {"error":"桶不存在"}
+
+PATCH /api/admin/accounts/demo/bucket
+{"bucket":"demo-bucket","autoCreateBucket":false}
+200 {"name":"demo","bucket":"demo-bucket","autoCreateBucket":false,...}
+```
+
+- 账号不存在 → `404`；管理面未认证 → `401`。
 - `builtin` 会话 cookie `objbox_admin` 带 `HttpOnly; SameSite=Lax; Path=/`；请求为 HTTPS
   （TLS 或 `X-Forwarded-Proto: https`）时另带 `Secure`，本地 http 调试不带。
 - 会话令牌为无状态签名 `base64(user|expiry|epoch).HMAC`；`<data>/admin.json` 记录 `sessionEpoch`，
