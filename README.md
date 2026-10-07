@@ -35,6 +35,8 @@ objbox 只补其中很薄的一层：**账号 + AK/SK + 隔离**。它复用标�
 - **分片上传**：流式落盘、并发分片、启动时清理过期任务。
 - **配额**：按账号限制写入字节数，超出返回 `403 QuotaExceeded`。
 - **管理页**：内嵌 React 管理页，支持 `AUTH_MODE=builtin`（自带口令）与 `sso`（信任网关）。
+  账号一键查看详情并复制接入信息（Endpoint / AK / SK / Bucket / Region / Path-style 与 rclone 示例），
+  新建账号后自动打开；账号内可建桶 / 看桶 / 删桶并查看对象数与占用，默认桶与自动建桶开关可就地修改。
 - **单二进制**：前端构建产物用 `//go:embed` 打进二进制，部署只需一个文件加一个数据目录。
 
 ## 快速开始
@@ -165,6 +167,7 @@ curl -o big.bin "$URL"
 | 变量 | 取值 | 默认 | 说明 |
 |---|---|---|---|
 | `AUTH_MODE` | `builtin` \| `sso` | `builtin` | **仅管理面**认证方式；S3 端点始终走 AK/SK |
+| `OBJBOX_PUBLIC_ENDPOINT` | URL | 空 | 管理页详情窗口展示 / 复制的对外 Endpoint；留空则按 `X-Forwarded-Proto` + `X-Forwarded-Host`（或 `Host`）运行时推导 |
 
 常用命令行参数（均为进程启动参数，不是环境变量）：
 

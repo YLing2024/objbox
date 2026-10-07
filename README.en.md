@@ -42,7 +42,10 @@ it does not aim to replace platform-style systems.
 - **Multipart upload**: streamed to disk, concurrent parts, expired uploads cleaned on startup.
 - **Quota**: per-account write byte limit, exceeding it returns `403 QuotaExceeded`.
 - **Admin page**: embedded React page, with `AUTH_MODE=builtin` (self-managed password) or `sso`
-  (trusts the gateway).
+  (trusts the gateway). One click shows an account's connection details and copies them
+  (Endpoint / AK / SK / Bucket / Region / Path-style plus an rclone example); the detail window opens
+  automatically after an account is created. Inside an account you can create, view and delete buckets,
+  see object counts and usage, and edit the default bucket and auto-create switch in place.
 - **Single binary**: frontend build output is embedded via `//go:embed`; deploy one file plus one data dir.
 
 ## Quick start
@@ -174,6 +177,7 @@ Environment variables:
 | Variable | Values | Default | Description |
 |---|---|---|---|
 | `AUTH_MODE` | `builtin` \| `sso` | `builtin` | **Admin-plane only** auth; S3 endpoints always use AK/SK |
+| `OBJBOX_PUBLIC_ENDPOINT` | URL | empty | Public Endpoint shown/copied in the admin detail window; when empty it is derived at runtime from `X-Forwarded-Proto` + `X-Forwarded-Host` (or `Host`) |
 
 Common command-line flags (process startup flags, not environment variables):
 
