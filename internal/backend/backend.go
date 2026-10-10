@@ -99,34 +99,26 @@ func (b *Backend) bucketExists(bucket string) bool {
 
 // ---- gofakes3.Backend 实现 ----
 
-// ListBuckets 列出账号 root 下所有合法目录作为桶。
+// ListBuckets 以磁盘为事实来源，列出账号 root 下所有合法目录作为桶。
+//
+// 不依赖任何桶索引：直接在每次调用时扫描 root 顶层目录（discoverBucketDirs），
+// 因此「管理员直接落盘、未经 S3 创建」的桶也会立即出现，且内部目录不会泄露。
 func (b *Backend) ListBuckets() ([]gofakes3.BucketInfo, error) {
-	entries, err := os.ReadDir(b.root)
+	entries, err := discoverBucketDirs(b.root)
 	if err != nil {
-		return nil, fmt.Errorf("backend: 读取 root 失败: %w", err)
+		return nil, err
 	}
 	out := make([]gofakes3.BucketInfo, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if strings.HasPrefix(name, ".") {
-			continue
-		}
-		if ValidateBucket(name) != nil {
-			continue
-		}
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
 		out = append(out, gofakes3.BucketInfo{
-			Name:         name,
+			Name:         e.Name(),
 			CreationDate: gofakes3.NewContentTime(info.ModTime().UTC()),
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
@@ -661,18 +653,14 @@ func (b *Backend) listEntries(bucket string) ([]objectEntry, error) {
 func (b *Backend) Reconcile() error {
 	disk := map[string]struct{}{}
 
-	bucketEntries, err := os.ReadDir(b.root)
+	// 以磁盘为事实来源扫描顶层桶目录（排除 .objbox 等内部目录），
+	// 启动 / 惰性建后端时即完成一次桶发现与对象索引重建。
+	bucketEntries, err := discoverBucketDirs(b.root)
 	if err != nil {
-		return fmt.Errorf("backend: 读取 root 失败: %w", err)
+		return err
 	}
 	for _, be := range bucketEntries {
-		if !be.IsDir() || strings.HasPrefix(be.Name(), ".") {
-			continue
-		}
 		bucket := be.Name()
-		if ValidateBucket(bucket) != nil {
-			continue
-		}
 		dir := b.bucketDir(bucket)
 		err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {

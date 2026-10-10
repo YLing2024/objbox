@@ -22,11 +22,23 @@ var (
 	ErrBucketNotEmpty = errors.New("bucket 非空")
 )
 
-// ListBucketNames 返回账号 root 下所有合法桶名（按名称排序）。
+// isInternalEntry 判断账号 root 下的一个目录项是否为实现内部产物，
+// 绝不能当作桶对外暴露：
+//   - 点开头的隐藏目录（如 .objbox 元数据库/分片目录）；
+//   - 写入用的临时文件前缀。
+func isInternalEntry(name string) bool {
+	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, tmpPrefix)
+}
+
+// discoverBucketDirs 以磁盘为事实来源，扫描账号 root 的顶层目录并返回合法桶目录。
 //
-// 与 Backend.ListBuckets 同源规则：跳过点开头目录与不合法桶名，
-// 但不打开 bbolt，供管理面在不占用账号元数据库的情况下只读列举。
-func ListBucketNames(root string) ([]string, error) {
+// 这是「桶发现」的唯一规则：非目录、内部目录（.objbox 等隐藏目录与临时文件）、
+// 以及不合规的桶名一律排除；结果按名称升序。启动重建索引（Reconcile）、
+// ListBuckets 与管理面列举都复用它，保证三处口径一致。
+//
+// 有意不维护桶的内存/元数据索引：每次都以磁盘现状为准，从根本上避免
+// 「盘上已存在但未经 S3 协议创建的桶」不可见的问题。root 不存在时返回空列表。
+func discoverBucketDirs(root string) ([]os.DirEntry, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -34,18 +46,30 @@ func ListBucketNames(root string) ([]string, error) {
 		}
 		return nil, fmt.Errorf("backend: 读取 root 失败: %w", err)
 	}
+	out := make([]os.DirEntry, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() || isInternalEntry(e.Name()) || ValidateBucket(e.Name()) != nil {
+			continue
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
+	return out, nil
+}
+
+// ListBucketNames 返回账号 root 下所有合法桶名（按名称排序）。
+//
+// 与 Backend.ListBuckets 同源规则（discoverBucketDirs）：跳过内部目录与不合法桶名，
+// 但不打开 bbolt，供管理面在不占用账号元数据库的情况下只读列举。
+func ListBucketNames(root string) ([]string, error) {
+	entries, err := discoverBucketDirs(root)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if strings.HasPrefix(name, ".") || ValidateBucket(name) != nil {
-			continue
-		}
-		out = append(out, name)
+		out = append(out, e.Name())
 	}
-	sort.Strings(out)
 	return out, nil
 }
 
