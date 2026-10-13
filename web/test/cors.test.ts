@@ -59,5 +59,52 @@ test('设置弹窗包含小节标题、原文说明与保存/关闭按钮', () =
   assert.match(appSource, /跨域白名单（CORS）/)
   assert.match(appSource, /留空表示关闭跨域/)
   assert.match(appSource, /已保存并即时生效/)
-  assert.match(appSource, /<button type="button" className="primary"[^>]*>\s*保存\s*</)
+  assert.match(appSource, /<Button[^>]*type="primary"[\s\S]*?>\s*保存\s*</)
+})
+
+// —— 第 1 轮 antd 迁移与三态主题的结构回归 ——
+
+const here2 = dirname(fileURLToPath(import.meta.url))
+const themeSource = readFileSync(join(here2, '..', 'src', 'theme.ts'), 'utf8')
+const indexSource = readFileSync(join(here2, '..', 'index.html'), 'utf8')
+const mainSource = readFileSync(join(here2, '..', 'src', 'main.tsx'), 'utf8')
+
+test('theme.ts：localStorage 键 theme_mode，导出 useThemeMode/setThemeMode 并监听系统变化', () => {
+  assert.match(themeSource, /theme_mode/)
+  assert.match(themeSource, /export function useThemeMode\b/)
+  assert.match(themeSource, /export function setThemeMode\b/)
+  assert.match(themeSource, /prefers-color-scheme: dark/)
+  assert.match(themeSource, /data-theme/)
+  assert.match(themeSource, /color-scheme/)
+})
+
+test('index.html：首屏绘制前内联脚本应用主题（防闪白）', () => {
+  assert.match(indexSource, /theme_mode/)
+  assert.match(indexSource, /data-theme/)
+  assert.match(indexSource, /color-scheme/)
+  assert.match(indexSource, /__OBJBOX_AUTH_MODE_VALUE__/)
+})
+
+test('main.tsx：包 ConfigProvider(locale+algorithm) 与 antd App，无自定义 token 映射', () => {
+  assert.match(mainSource, /ConfigProvider/)
+  assert.match(mainSource, /antdTheme\.darkAlgorithm/)
+  assert.match(mainSource, /antdTheme\.defaultAlgorithm/)
+  assert.match(mainSource, /AntdApp|App as AntdApp/)
+  // theme 里只允许 algorithm / locale，不得出现 token/components 自定义映射
+  assert.doesNotMatch(mainSource, /\btoken\s*:/)
+  assert.doesNotMatch(mainSource, /\bcomponents\s*:/)
+})
+
+test('App.tsx：操作列 fixed right + 明确 width + scroll x，长表 sticky offsetHeader 64', () => {
+  assert.match(appSource, /fixed:\s*'right'/)
+  assert.match(appSource, /width:\s*300/)
+  assert.match(appSource, /scroll=\{\{\s*x:\s*\d+/)
+  assert.match(appSource, /sticky=\{\{\s*offsetHeader:\s*64\s*\}\}/)
+})
+
+test('App.tsx：主题三态 Segmented（自动/亮色/暗色）', () => {
+  assert.match(appSource, /自动/)
+  assert.match(appSource, /亮色/)
+  assert.match(appSource, /暗色/)
+  assert.match(appSource, /<Segmented\b/)
 })
