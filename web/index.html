@@ -5,6 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>objbox 管理</title>
     <script>
+      // 首屏绘制前应用主题（防闪白）：读 theme_mode，写 html[data-theme] 与 meta[name=color-scheme]。
+      // 与 src/theme.ts 的规则保持一致，但不依赖任何打包产物。
+      (function () {
+        try {
+          var m = window.localStorage.getItem('theme_mode')
+          if (m !== 'light' && m !== 'dark' && m !== 'auto') {
+            m = 'auto'
+          }
+          var dark =
+            m === 'dark' ||
+            (m === 'auto' &&
+              window.matchMedia &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          var resolved = dark ? 'dark' : 'light'
+          document.documentElement.setAttribute('data-theme', resolved)
+          document.documentElement.style.colorScheme = resolved
+          var meta = document.querySelector('meta[name="color-scheme"]')
+          if (!meta) {
+            meta = document.createElement('meta')
+            meta.setAttribute('name', 'color-scheme')
+            document.head.appendChild(meta)
+          }
+          meta.setAttribute('content', resolved)
+        } catch (e) {
+          /* localStorage 不可用时保持默认 */
+        }
+      })()
+    </script>
+    <script>
       window.__OBJBOX_AUTH_MODE__ = '__OBJBOX_AUTH_MODE_VALUE__'
     </script>
   </head>
