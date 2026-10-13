@@ -11,6 +11,13 @@ body:not([class*='ant-']) {
   margin: 0;
 }
 
+/* antd 只给自家组件上字体，裸文本要自己兜住（与其它站一致）。 */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji',
+    'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+}
+
 .objbox-layout {
   min-height: 100vh;
 }
