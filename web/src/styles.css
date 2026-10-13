@@ -1,396 +1,106 @@
-:root {
-  color-scheme: light;
-  --bg: #f5f6f8;
-  --panel: #ffffff;
-  --border: #d9dce1;
-  --text: #1f2328;
-  --muted: #6b7280;
-  --accent: #2563eb;
-  --danger: #b42318;
-  --warn: #92400e;
+/* 仅保留布局 glue：颜色/字体/圆角/间距一律交给 antd 默认设计语言。
+   这里不写任何自定义色值，也不写 @font-face（本仓库无自托管字体）。 */
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
-* {
-  box-sizing: border-box;
-}
-
-body {
+body:not([class*='ant-']) {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  font-size: 14px;
 }
 
-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  word-break: break-all;
+.objbox-layout {
+  min-height: 100vh;
 }
 
-button {
-  font: inherit;
-  cursor: pointer;
+/* 顶栏常驻可见：随页面滚动吸顶。高度沿用 antd Header 默认 64px。 */
+.objbox-header:not([class*='ant-']) {
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 
-button.primary {
-  background: var(--accent);
-  color: #fff;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  padding: 6px 14px;
+.objbox-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
 }
 
-button.primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.objbox-brand {
+  font-size: 16px;
+  font-weight: 600;
 }
 
-button.link {
-  background: none;
-  border: none;
-  color: var(--accent);
-  padding: 0 4px;
+.objbox-header-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
-button.link.danger {
-  color: var(--danger);
+.objbox-content {
+  padding: 16px 20px 40px;
 }
 
-input {
-  font: inherit;
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: #fff;
-}
-
-textarea {
-  font: inherit;
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: #fff;
-  resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-
-.ok {
-  color: #027a48;
-}
-
-.muted {
-  color: var(--muted);
-}
-
-.error {
-  color: var(--danger);
-}
-
-.warn {
-  color: var(--warn);
-}
-
-.center {
+.objbox-center {
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 24px;
 }
 
-.card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 20px;
+/* 登录/未认证页右上角也常驻主题切换，保证控件始终可见。 */
+.objbox-topright {
+  position: fixed;
+  top: 16px;
+  right: 20px;
+  z-index: 20;
 }
 
-.login {
+.objbox-login-card {
   width: 320px;
+}
+
+.objbox-field {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 4px;
 }
 
-.login h1 {
-  font-size: 18px;
-  margin: 0;
-}
-
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 10px 20px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
-}
-
-.brand {
-  font-weight: 600;
-}
-
-.stats {
-  display: flex;
-  gap: 14px;
-  color: var(--muted);
-}
-
-.tag {
-  background: #eef2ff;
-  color: var(--accent);
-  border-radius: 4px;
-  padding: 1px 8px;
-}
-
-.topbar .right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.content {
-  padding: 20px;
-}
-
-.toolbar {
+.objbox-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
-.toolbar h2 {
-  font-size: 16px;
-  margin: 0;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-}
-
-th {
-  background: #fafbfc;
-  font-weight: 600;
-  color: var(--muted);
-}
-
-td.path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  word-break: break-all;
-}
-
-td.ops {
-  white-space: nowrap;
-}
-
-.status {
-  border-radius: 4px;
-  padding: 1px 8px;
-  font-size: 12px;
-}
-
-.status.enabled {
-  background: #ecfdf3;
-  color: #027a48;
-}
-
-.status.disabled {
-  background: #fef3f2;
-  color: var(--danger);
-}
-
-.status.readonly {
-  background: #fffaeb;
-  color: var(--warn);
-}
-
-.overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.35);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.modal {
-  width: 460px;
-  max-width: calc(100vw - 40px);
+.objbox-buckets {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.modal h2 {
-  font-size: 16px;
-  margin: 0;
-}
-
-.modal label {
+.objbox-stack {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  color: var(--muted);
-}
-
-.modal label.checkbox {
-  flex-direction: row;
-  align-items: center;
   gap: 8px;
 }
 
-.modal label.checkbox input {
-  width: auto;
-}
-
-.actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.kv {
-  display: grid;
-  grid-template-columns: 90px 1fr;
-  gap: 6px 10px;
-  margin: 0;
-}
-
-.kv dt {
-  color: var(--muted);
-}
-
-.kv dd {
-  margin: 0;
-  word-break: break-all;
-}
-
-.banner {
-  margin: 12px 20px 0;
-  padding: 8px 12px;
-  border-radius: 4px;
-  background: #fef3f2;
-}
-
-button.link:disabled {
-  color: var(--muted);
-  cursor: not-allowed;
-}
-
-.secret {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
-.modal.wide {
-  width: 640px;
-  max-height: calc(100vh - 40px);
-  overflow-y: auto;
-}
-
-.section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.section-title {
-  font-weight: 600;
-}
-
-.buckets {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
-}
-
-.buckets-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--panel);
-  border: 1px solid var(--border);
-}
-
-.buckets-table th,
-.buckets-table td {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-  text-align: left;
-  font-size: 13px;
-}
-
-.bucket-create,
-.bucket-default {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-}
-
-.bucket-create input {
-  flex: 1;
-}
-
-.bucket-default label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--muted);
-  flex: 1;
-}
-
-.bucket-default label.checkbox {
-  flex-direction: row;
-  align-items: center;
-}
-
-.bucket-default label.checkbox input {
-  width: auto;
-}
-
-.example {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.copyblock {
-  margin: 0;
-  padding: 10px;
-  background: #fafbfc;
-  border: 1px solid var(--border);
-  border-radius: 4px;
+.objbox-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
-  white-space: pre-wrap;
   word-break: break-all;
 }
 
-.cors-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--muted);
+.objbox-copyblock {
+  margin: 0;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
 }

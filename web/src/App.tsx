@@ -1,4 +1,25 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Descriptions,
+  Drawer,
+  Form,
+  Input,
+  Layout,
+  Menu,
+  Modal,
+  Popconfirm,
+  Segmented,
+  Space,
+  Table,
+  Tag,
+  Typography,
+  theme as antdTheme,
+} from 'antd'
+import type { DescriptionsProps, TableProps } from 'antd'
 import {
   ApiError,
   api,
@@ -10,6 +31,7 @@ import {
   type Overview,
 } from './api'
 import { firstInvalid, parseOrigins } from './cors'
+import { setThemeMode, useThemeMode, type ThemeMode } from './theme'
 
 // ---- 小工具 ----
 
@@ -31,6 +53,17 @@ function useHashRoute(): [string, (r: string) => void] {
   return [route, navigate]
 }
 
+// useNarrow：窄屏判定，用于把顶栏操作收进抽屉。
+function useNarrow(): boolean {
+  const subscribe = useCallback((callback: () => void) => {
+    const mql = window.matchMedia('(max-width: 767px)')
+    mql.addEventListener('change', callback)
+    return () => mql.removeEventListener('change', callback)
+  }, [])
+  const getSnapshot = useCallback(() => window.matchMedia('(max-width: 767px)').matches, [])
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
 function formatBytes(n: number): string {
   if (!n || n <= 0) {
     return '0 B'
@@ -49,6 +82,22 @@ const statusLabel: Record<Account['status'], string> = {
   enabled: '启用',
   disabled: '停用',
   readonly: '只读',
+}
+
+const statusColor: Record<Account['status'], string> = {
+  enabled: 'success',
+  disabled: 'error',
+  readonly: 'warning',
+}
+
+// Field：弹层里「标签在上、控件在下」的简洁排版。
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="objbox-field">
+      <Typography.Text>{label}</Typography.Text>
+      {children}
+    </div>
+  )
 }
 
 function CopyButton({
@@ -74,9 +123,9 @@ function CopyButton({
     }
   }
   return (
-    <button type="button" className="link" disabled={disabled} onClick={copy}>
+    <Button type="link" size="small" disabled={disabled} onClick={() => void copy()}>
       {done ? '已复制' : label}
-    </button>
+    </Button>
   )
 }
 
@@ -96,13 +145,15 @@ function SecretCell({
 }) {
   const display = shown && secret ? secret : masked
   return (
-    <span className="secret">
-      <code>{display}</code>{' '}
-      <button type="button" className="link" onClick={onToggle}>
+    <Space size={4} wrap>
+      <Typography.Text code className="objbox-mono">
+        {display}
+      </Typography.Text>
+      <Button type="link" size="small" onClick={onToggle}>
         {shown ? '隐藏' : '显示'}
-      </button>{' '}
+      </Button>
       <CopyButton value={secret ?? ''} disabled={!shown || !secret} />
-    </span>
+    </Space>
   )
 }
 
@@ -181,9 +232,6 @@ function BucketPanel({
   }
 
   const remove = async (b: BucketInfo) => {
-    if (!window.confirm(`确定删除桶 ${b.name}？仅空桶可删，桶内还有对象时需先清空。`)) {
-      return
-    }
     setError('')
     try {
       await api.deleteBucket(account.name, b.name)
@@ -215,85 +263,88 @@ function BucketPanel({
     }
   }
 
-  return (
-    <div className="buckets">
-      <div className="section-head">
-        <span className="section-title">桶</span>
-        <button type="button" className="link" onClick={() => void load()}>
-          刷新
-        </button>
-      </div>
-      <table className="buckets-table">
-        <thead>
-          <tr>
-            <th>桶名</th>
-            <th>对象数</th>
-            <th>占用</th>
-            <th>默认</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {buckets.map((b) => (
-            <tr key={b.name}>
-              <td>
-                <code>{b.name}</code> <CopyButton value={b.name} />
-              </td>
-              <td>{b.objects}</td>
-              <td>{formatBytes(b.bytes)}</td>
-              <td>{b.isDefault ? '默认' : ''}</td>
-              <td>
-                <button type="button" className="link danger" onClick={() => void remove(b)}>
-                  删除
-                </button>
-              </td>
-            </tr>
-          ))}
-          {loading ? (
-            <tr>
-              <td colSpan={5} className="muted">
-                加载中…
-              </td>
-            </tr>
-          ) : buckets.length === 0 ? (
-            <tr>
-              <td colSpan={5} className="muted">
-                暂无桶
-              </td>
-            </tr>
-          ) : null}
-        </tbody>
-      </table>
+  const columns: TableProps<BucketInfo>['columns'] = [
+    {
+      title: '桶名',
+      dataIndex: 'name',
+      width: 240,
+      render: (_value, b) => (
+        <Space size={4} wrap>
+          <Typography.Text code className="objbox-mono">
+            {b.name}
+          </Typography.Text>
+          <CopyButton value={b.name} />
+        </Space>
+      ),
+    },
+    { title: '对象数', dataIndex: 'objects', width: 100 },
+    { title: '占用', dataIndex: 'bytes', width: 120, render: (value: number) => formatBytes(value) },
+    {
+      title: '默认',
+      dataIndex: 'isDefault',
+      width: 90,
+      render: (value: boolean) => (value ? '默认' : ''),
+    },
+    {
+      title: '操作',
+      key: 'ops',
+      fixed: 'right',
+      width: 100,
+      render: (_value, b) => (
+        <Popconfirm
+          title={`确定删除桶 ${b.name}？仅空桶可删，桶内还有对象时需先清空。`}
+          onConfirm={() => void remove(b)}
+        >
+          <Button type="link" size="small" danger>
+            删除
+          </Button>
+        </Popconfirm>
+      ),
+    },
+  ]
 
-      <div className="bucket-create">
-        <input
+  return (
+    <div className="objbox-buckets">
+      <div className="objbox-section-head">
+        <Typography.Text strong>桶</Typography.Text>
+        <Button type="link" size="small" onClick={() => void load()}>
+          刷新
+        </Button>
+      </div>
+      <Table
+        rowKey="name"
+        size="small"
+        columns={columns}
+        dataSource={buckets}
+        loading={loading}
+        pagination={false}
+        scroll={{ x: 650 }}
+        locale={{ emptyText: '暂无桶' }}
+      />
+
+      <Space.Compact style={{ width: '100%' }}>
+        <Input
           value={newName}
           placeholder="新桶名（3-63 位）"
           onChange={(e) => setNewName(e.target.value)}
         />
-        <button type="button" className="primary" disabled={busy} onClick={() => void create()}>
+        <Button type="primary" loading={busy} onClick={() => void create()}>
           新建桶
-        </button>
-      </div>
+        </Button>
+      </Space.Compact>
 
-      <div className="bucket-default">
-        <label>
-          默认桶
-          <input value={editBucket} onChange={(e) => setEditBucket(e.target.value)} />
-        </label>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={editAuto}
-            onChange={(e) => setEditAuto(e.target.checked)}
-          />
+      <Space align="end" wrap>
+        <Field label="默认桶">
+          <Input value={editBucket} onChange={(e) => setEditBucket(e.target.value)} />
+        </Field>
+        <Checkbox checked={editAuto} onChange={(e) => setEditAuto(e.target.checked)}>
           自动创建同名桶
-        </label>
-        <button type="button" disabled={saveBusy} onClick={() => void save()}>
+        </Checkbox>
+        <Button loading={saveBusy} onClick={() => void save()}>
           保存
-        </button>
-      </div>
-      {error ? <p className="error">{error}</p> : null}
+        </Button>
+      </Space>
+      {error ? <Alert type="error" showIcon message={error} /> : null}
     </div>
   )
 }
@@ -301,7 +352,6 @@ function BucketPanel({
 // ---- 设置弹窗 ----
 
 // SettingsModal 是全站设置（当前仅跨域白名单），入口在标题栏「设置」。
-// 复用页面既有的 overlay + card modal + actions 结构；遮罩或「关闭」关闭，
 // 未保存的编辑随组件卸载丢弃，重新打开会重新拉取已保存值。
 function SettingsModal({ onClose }: { onClose: () => void }) {
   const [value, setValue] = useState('')
@@ -352,18 +402,29 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="overlay" onClick={onClose}>
-      <div className="card modal" onClick={(e) => e.stopPropagation()}>
-        <h2>设置</h2>
-        <div className="section-head">
-          <span className="section-title">跨域白名单（CORS）</span>
-        </div>
-        <p className="muted">
+    <Modal
+      title="设置"
+      open
+      onCancel={onClose}
+      width={520}
+      footer={[
+        <Button key="close" onClick={onClose}>
+          关闭
+        </Button>,
+        <Button key="save" type="primary" loading={saving} onClick={() => void save()}>
+          保存
+        </Button>,
+      ]}
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Typography.Title level={5} style={{ margin: 0 }}>
+          跨域白名单（CORS）
+        </Typography.Title>
+        <Typography.Text type="secondary">
           允许这些来源的网页在浏览器里直接读写本对象存储（预签名直传/直下）。留空表示关闭跨域。请只填你自己的前端域名。
-        </p>
-        <label className="cors-editor">
-          来源（每行一个，也支持逗号分隔）
-          <textarea
+        </Typography.Text>
+        <Field label="来源（每行一个，也支持逗号分隔）">
+          <Input.TextArea
             rows={4}
             value={value}
             spellCheck={false}
@@ -374,27 +435,37 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
               setError('')
             }}
           />
-        </label>
-        {error || validationError ? <p className="error">{error || validationError}</p> : null}
-        <p className="muted">
+        </Field>
+        {error || validationError ? (
+          <Alert type="error" showIcon message={error || validationError} />
+        ) : null}
+        <Typography.Text type="secondary">
           当前生效：
           {loading ? '加载中…' : effective.length > 0 ? effective.join('、') : '未开启跨域'}
-        </p>
-        {saved ? <p className="ok">已保存并即时生效</p> : null}
-        <div className="actions">
-          <button type="button" className="primary" disabled={saving} onClick={() => void save()}>
-            保存
-          </button>
-          <button type="button" onClick={onClose}>
-            关闭
-          </button>
-        </div>
-      </div>
-    </div>
+        </Typography.Text>
+        {saved ? <Alert type="success" showIcon message="已保存并即时生效" /> : null}
+      </Space>
+    </Modal>
   )
 }
 
 // ---- 登录 / 未认证 ----
+
+function ThemeSwitcher() {
+  const mode = useThemeMode()
+  return (
+    <Segmented
+      size="small"
+      value={mode}
+      onChange={(value) => setThemeMode(value as ThemeMode)}
+      options={[
+        { label: '自动', value: 'auto' },
+        { label: '亮色', value: 'light' },
+        { label: '暗色', value: 'dark' },
+      ]}
+    />
+  )
+}
 
 function LoginView({
   error,
@@ -403,42 +474,46 @@ function LoginView({
   error: string
   onSubmit: (password: string) => void
 }) {
-  const [password, setPassword] = useState('')
+  const [form] = Form.useForm<{ password: string }>()
   return (
-    <div className="center">
-      <form
-        className="card login"
-        onSubmit={(e) => {
-          e.preventDefault()
-          onSubmit(password)
-        }}
-      >
-        <h1>objbox 管理</h1>
-        <p className="muted">请输入管理员口令</p>
-        <input
-          type="password"
-          value={password}
-          autoFocus
-          placeholder="管理员口令"
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        {error ? <p className="error">{error}</p> : null}
-        <button type="submit" className="primary">
-          登录
-        </button>
-      </form>
+    <div className="objbox-center">
+      <div className="objbox-topright">
+        <ThemeSwitcher />
+      </div>
+      <Card className="objbox-login-card">
+        <Typography.Title level={4} style={{ marginTop: 0 }}>
+          objbox 管理
+        </Typography.Title>
+        <Typography.Text type="secondary">请输入管理员口令</Typography.Text>
+        <Form form={form} layout="vertical" onFinish={(values) => onSubmit(values.password)}>
+          <Form.Item name="password">
+            <Input.Password autoFocus placeholder="管理员口令" />
+          </Form.Item>
+          {error ? <Alert type="error" showIcon message={error} /> : null}
+          <Button type="primary" htmlType="submit" block style={{ marginTop: 12 }}>
+            登录
+          </Button>
+        </Form>
+      </Card>
     </div>
   )
 }
 
 function ForbiddenView() {
   return (
-    <div className="center">
-      <div className="card login">
-        <h1>未认证</h1>
-        <p className="muted">当前为 SSO 模式，请通过网关携带 X-Auth-User 访问。</p>
-        <p className="error">401 Unauthorized</p>
+    <div className="objbox-center">
+      <div className="objbox-topright">
+        <ThemeSwitcher />
       </div>
+      <Card className="objbox-login-card">
+        <Typography.Title level={4} style={{ marginTop: 0 }}>
+          未认证
+        </Typography.Title>
+        <Typography.Text type="secondary">
+          当前为 SSO 模式，请通过网关携带 X-Auth-User 访问。
+        </Typography.Text>
+        <Alert type="error" showIcon message="401 Unauthorized" style={{ marginTop: 12 }} />
+      </Card>
     </div>
   )
 }
@@ -449,36 +524,99 @@ function TopBar({
   mode,
   user,
   overview,
+  isNarrow,
   onLogout,
   onOpenSettings,
+  onOpenMenu,
 }: {
   mode: AuthMode
   user: string
   overview: Overview | null
+  isNarrow: boolean
   onLogout: () => void
   onOpenSettings: () => void
+  onOpenMenu: () => void
 }) {
+  const { token } = antdTheme.useToken()
+  const light = { color: token.colorTextLightSolid }
+  const stats = (
+    <Space size={16} style={{ opacity: 0.85 }}>
+      <Tag color="blue">{mode === 'sso' ? 'SSO' : 'builtin'}</Tag>
+      <span>账号 {overview ? overview.accounts : 0}</span>
+      <span>总用量 {formatBytes(overview ? overview.totalUsageBytes : 0)}</span>
+    </Space>
+  )
   return (
-    <header className="topbar">
-      <div className="brand">objbox 管理</div>
-      <div className="stats">
-        <span className="tag">{mode === 'sso' ? 'SSO' : 'builtin'}</span>
-        <span>账号 {overview ? overview.accounts : 0}</span>
-        <span>总用量 {formatBytes(overview ? overview.totalUsageBytes : 0)}</span>
-      </div>
-      <div className="right">
-        <button type="button" className="link" onClick={onOpenSettings}>
-          设置
-        </button>
-        {mode === 'sso' ? (
-          <span className="muted">当前用户：{user || '未知'}</span>
+    <Layout.Header className="objbox-header" style={light}>
+      <span className="objbox-brand">objbox 管理</span>
+      {!isNarrow ? stats : null}
+      <div className="objbox-header-right" style={light}>
+        {isNarrow ? (
+          <Button type="link" style={light} onClick={onOpenMenu}>
+            菜单
+          </Button>
         ) : (
-          <button type="button" className="link" onClick={onLogout}>
-            退出
-          </button>
+          <>
+            <ThemeSwitcher />
+            <Button type="link" style={light} onClick={onOpenSettings}>
+              设置
+            </Button>
+            {mode === 'sso' ? (
+              <span style={{ opacity: 0.85 }}>当前用户：{user || '未知'}</span>
+            ) : (
+              <Button type="link" style={light} onClick={onLogout}>
+                退出
+              </Button>
+            )}
+          </>
         )}
       </div>
-    </header>
+    </Layout.Header>
+  )
+}
+
+// 窄屏抽屉：把统计、主题三态、设置与退出收进来，确保切换控件始终可达。
+function NarrowMenu({
+  open,
+  mode,
+  user,
+  overview,
+  onClose,
+  onOpenSettings,
+  onLogout,
+}: {
+  open: boolean
+  mode: AuthMode
+  user: string
+  overview: Overview | null
+  onClose: () => void
+  onOpenSettings: () => void
+  onLogout: () => void
+}) {
+  return (
+    <Drawer placement="right" open={open} onClose={onClose} width={280}>
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <ThemeSwitcher />
+        <Space direction="vertical" size={4}>
+          <Tag color="blue">{mode === 'sso' ? 'SSO' : 'builtin'}</Tag>
+          <span>账号 {overview ? overview.accounts : 0}</span>
+          <span>总用量 {formatBytes(overview ? overview.totalUsageBytes : 0)}</span>
+        </Space>
+        <Button
+          onClick={() => {
+            onClose()
+            onOpenSettings()
+          }}
+        >
+          设置
+        </Button>
+        {mode === 'sso' ? (
+          <Typography.Text>当前用户：{user || '未知'}</Typography.Text>
+        ) : (
+          <Button onClick={onLogout}>退出</Button>
+        )}
+      </Space>
+    </Drawer>
   )
 }
 
@@ -511,45 +649,38 @@ function AddAccountModal({
     }
   }
   return (
-    <div className="overlay">
-      <div className="card modal">
-        <h2>新增账号</h2>
-        <label>
-          账号名（[a-z0-9-]，1-32 位）
-          <input value={name} autoFocus onChange={(e) => setName(e.target.value)} />
-        </label>
-        <label>
-          备注
-          <input value={note} onChange={(e) => setNote(e.target.value)} />
-        </label>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={autoCreate}
-            onChange={(e) => setAutoCreate(e.target.checked)}
-          />
+    <Modal
+      title="新增账号"
+      open
+      onCancel={onClose}
+      onOk={() => void submit()}
+      okText="创建"
+      cancelText="取消"
+      confirmLoading={busy}
+      okButtonProps={{ disabled: !valid }}
+      width={480}
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Field label="账号名（[a-z0-9-]，1-32 位）">
+          <Input value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="备注">
+          <Input value={note} onChange={(e) => setNote(e.target.value)} />
+        </Field>
+        <Checkbox checked={autoCreate} onChange={(e) => setAutoCreate(e.target.checked)}>
           自动创建同名桶
-        </label>
-        <label>
-          默认桶名（留空 = 账号名）
-          <input
+        </Checkbox>
+        <Field label="默认桶名（留空 = 账号名）">
+          <Input
             value={bucket}
             disabled={!autoCreate}
             placeholder={name || '账号名'}
             onChange={(e) => setBucket(e.target.value)}
           />
-        </label>
-        {error ? <p className="error">{error}</p> : null}
-        <div className="actions">
-          <button type="button" onClick={onClose}>
-            取消
-          </button>
-          <button type="button" className="primary" disabled={!valid || busy} onClick={submit}>
-            创建
-          </button>
-        </div>
-      </div>
-    </div>
+        </Field>
+        {error ? <Alert type="error" showIcon message={error} /> : null}
+      </Space>
+    </Modal>
   )
 }
 
@@ -584,28 +715,26 @@ function EditAccountModal({
     }
   }
   return (
-    <div className="overlay">
-      <div className="card modal">
-        <h2>编辑账号 {account.name}</h2>
-        <label>
-          备注
-          <input value={note} onChange={(e) => setNote(e.target.value)} />
-        </label>
-        <label>
-          配额（字节，0 表示不限）
-          <input value={quota} onChange={(e) => setQuota(e.target.value)} />
-        </label>
-        {error ? <p className="error">{error}</p> : null}
-        <div className="actions">
-          <button type="button" onClick={onClose}>
-            取消
-          </button>
-          <button type="button" className="primary" disabled={busy} onClick={submit}>
-            保存
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal
+      title={`编辑账号 ${account.name}`}
+      open
+      onCancel={onClose}
+      onOk={() => void submit()}
+      okText="保存"
+      cancelText="取消"
+      confirmLoading={busy}
+      width={480}
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Field label="备注">
+          <Input value={note} onChange={(e) => setNote(e.target.value)} />
+        </Field>
+        <Field label="配额（字节，0 表示不限）">
+          <Input value={quota} onChange={(e) => setQuota(e.target.value)} />
+        </Field>
+        {error ? <Alert type="error" showIcon message={error} /> : null}
+      </Space>
+    </Modal>
   )
 }
 
@@ -650,62 +779,112 @@ function AccountDetailModal({
     `寻址: ${addressing}`,
   ].join('\n')
 
-  return (
-    <div className="overlay">
-      <div className="card modal wide">
-        <h2>账号详情 {account.name}</h2>
-        <dl className="kv">
-          <dt>Endpoint</dt>
-          <dd>
-            <code>{endpoint}</code> <CopyButton value={endpoint} />
-          </dd>
-          <dt>Bucket</dt>
-          <dd>
-            <code>{defaultBucket}</code> <CopyButton value={defaultBucket} />
-          </dd>
-          <dt>Access Key</dt>
-          <dd>
-            <code>{account.ak}</code> <CopyButton value={account.ak} />
-          </dd>
-          <dt>Secret Key</dt>
-          <dd>
-            <SecretCell
-              masked={account.sk}
-              secret={secrets[account.name]}
-              shown={secretShown}
-              onToggle={() => onToggleSecret(account.name)}
-            />
-          </dd>
-          <dt>Region</dt>
-          <dd>
-            <code>{region}</code> <CopyButton value={region} />
-          </dd>
-          <dt>Addressing</dt>
-          <dd>
-            <code>{addressing}</code> <CopyButton value={addressing} />{' '}
-            <span className="muted">客户端里需选 Path-style</span>
-          </dd>
-        </dl>
+  const items: DescriptionsProps['items'] = [
+    {
+      key: 'endpoint',
+      label: 'Endpoint',
+      children: (
+        <Space size={4} wrap>
+          <Typography.Text code className="objbox-mono">
+            {endpoint}
+          </Typography.Text>
+          <CopyButton value={endpoint} />
+        </Space>
+      ),
+    },
+    {
+      key: 'bucket',
+      label: 'Bucket',
+      children: (
+        <Space size={4} wrap>
+          <Typography.Text code className="objbox-mono">
+            {defaultBucket}
+          </Typography.Text>
+          <CopyButton value={defaultBucket} />
+        </Space>
+      ),
+    },
+    {
+      key: 'ak',
+      label: 'Access Key',
+      children: (
+        <Space size={4} wrap>
+          <Typography.Text code className="objbox-mono">
+            {account.ak}
+          </Typography.Text>
+          <CopyButton value={account.ak} />
+        </Space>
+      ),
+    },
+    {
+      key: 'sk',
+      label: 'Secret Key',
+      children: (
+        <SecretCell
+          masked={account.sk}
+          secret={secrets[account.name]}
+          shown={secretShown}
+          onToggle={() => onToggleSecret(account.name)}
+        />
+      ),
+    },
+    {
+      key: 'region',
+      label: 'Region',
+      children: (
+        <Space size={4} wrap>
+          <Typography.Text code className="objbox-mono">
+            {region}
+          </Typography.Text>
+          <CopyButton value={region} />
+        </Space>
+      ),
+    },
+    {
+      key: 'addressing',
+      label: 'Addressing',
+      children: (
+        <Space size={4} wrap>
+          <Typography.Text code className="objbox-mono">
+            {addressing}
+          </Typography.Text>
+          <CopyButton value={addressing} />
+          <Typography.Text type="secondary">客户端里需选 Path-style</Typography.Text>
+        </Space>
+      ),
+    },
+  ]
 
-        <div className="example">
-          <div className="section-head">
-            <span className="section-title">示例配置</span>
+  return (
+    <Modal
+      title={`账号详情 ${account.name}`}
+      open
+      onCancel={onClose}
+      width={680}
+      footer={
+        <Button type="primary" onClick={onClose}>
+          关闭
+        </Button>
+      }
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Descriptions column={1} size="small" bordered items={items} />
+
+        <div>
+          <div className="objbox-section-head">
+            <Typography.Text strong>示例配置</Typography.Text>
             <CopyButton label="复制示例" value={example} />
           </div>
-          <pre className="copyblock">{example}</pre>
+          <pre className="objbox-copyblock">{example}</pre>
         </div>
 
-        <p className="muted">桶不存在会自动创建，Bucket 那栏随便填或填账号名即可。</p>
+        <Typography.Text type="secondary">
+          桶不存在会自动创建，Bucket 那栏随便填或填账号名即可。
+        </Typography.Text>
 
         <BucketPanel account={account} onAccountChanged={onAccountChanged} />
-
-        <div className="actions">
-          <button type="button" className="primary" onClick={onClose}>
-            关闭
-          </button>
-        </div>
-      </div>
-    </div>
+      </Space>
+    </Modal>
   )
 }
 
@@ -721,17 +900,19 @@ function BucketManageModal({
   onClose: () => void
 }) {
   return (
-    <div className="overlay">
-      <div className="card modal wide">
-        <h2>桶管理 {account.name}</h2>
-        <BucketPanel account={account} onAccountChanged={onAccountChanged} />
-        <div className="actions">
-          <button type="button" className="primary" onClick={onClose}>
-            关闭
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal
+      title={`桶管理 ${account.name}`}
+      open
+      onCancel={onClose}
+      width={680}
+      footer={
+        <Button type="primary" onClick={onClose}>
+          关闭
+        </Button>
+      }
+    >
+      <BucketPanel account={account} onAccountChanged={onAccountChanged} />
+    </Modal>
   )
 }
 
@@ -756,66 +937,100 @@ function SecretModal({
   pathStyle?: boolean
   onClose: () => void
 }) {
+  const items: DescriptionsProps['items'] = [
+    {
+      key: 'name',
+      label: '账号',
+      children: (
+        <Space size={4} wrap>
+          {name}
+          <CopyButton value={name} />
+        </Space>
+      ),
+    },
+  ]
+  if (ak) {
+    items.push({
+      key: 'ak',
+      label: 'AK',
+      children: (
+        <Space size={4} wrap>
+          <Typography.Text code className="objbox-mono">
+            {ak}
+          </Typography.Text>
+          <CopyButton value={ak} />
+        </Space>
+      ),
+    })
+  }
+  items.push({
+    key: 'sk',
+    label: 'SK',
+    children: (
+      <Space size={4} wrap>
+        <Typography.Text code className="objbox-mono">
+          {sk}
+        </Typography.Text>
+        <CopyButton value={sk} />
+      </Space>
+    ),
+  })
+  if (endpoint) {
+    items.push({
+      key: 'endpoint',
+      label: 'Endpoint',
+      children: (
+        <Space size={4} wrap>
+          <Typography.Text code className="objbox-mono">
+            {endpoint}
+          </Typography.Text>
+          <CopyButton value={endpoint} />
+        </Space>
+      ),
+    })
+  }
+  if (region) {
+    items.push({
+      key: 'region',
+      label: 'Region',
+      children: (
+        <Typography.Text code className="objbox-mono">
+          {region}
+        </Typography.Text>
+      ),
+    })
+  }
+  if (pathStyle !== undefined) {
+    items.push({
+      key: 'pathstyle',
+      label: 'PathStyle',
+      children: pathStyle ? 'true' : 'false',
+    })
+  }
+
   return (
-    <div className="overlay">
-      <div className="card modal">
-        <h2>{title}</h2>
-        <p className="warn">关闭后不再显示，请立即保存。</p>
-        <dl className="kv">
-          <dt>账号</dt>
-          <dd>
-            {name} <CopyButton value={name} />
-          </dd>
-          {ak ? (
-            <>
-              <dt>AK</dt>
-              <dd>
-                <code>{ak}</code> <CopyButton value={ak} />
-              </dd>
-            </>
-          ) : null}
-          <dt>SK</dt>
-          <dd>
-            <code>{sk}</code> <CopyButton value={sk} />
-          </dd>
-          {endpoint ? (
-            <>
-              <dt>Endpoint</dt>
-              <dd>
-                <code>{endpoint}</code> <CopyButton value={endpoint} />
-              </dd>
-            </>
-          ) : null}
-          {region ? (
-            <>
-              <dt>Region</dt>
-              <dd>
-                <code>{region}</code>
-              </dd>
-            </>
-          ) : null}
-          {pathStyle !== undefined ? (
-            <>
-              <dt>PathStyle</dt>
-              <dd>{pathStyle ? 'true' : 'false'}</dd>
-            </>
-          ) : null}
-        </dl>
+    <Modal
+      title={title}
+      open
+      onCancel={onClose}
+      width={560}
+      footer={
+        <Button type="primary" onClick={onClose}>
+          我已保存
+        </Button>
+      }
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Alert type="warning" showIcon message="关闭后不再显示，请立即保存。" />
+        <Descriptions column={1} size="small" bordered items={items} />
         {ak && endpoint ? (
-          <div className="actions">
-            <CopyButton
-              label="复制连接信息"
-              value={`Endpoint: ${endpoint}\nRegion: ${region ?? ''}\nPathStyle: ${pathStyle}\nAK: ${ak}\nSK: ${sk}`}
-            />
-          </div>
+          <CopyButton
+            label="复制连接信息"
+            value={`Endpoint: ${endpoint}\nRegion: ${region ?? ''}\nPathStyle: ${pathStyle}\nAK: ${ak}\nSK: ${sk}`}
+          />
         ) : null}
-        <div className="actions">
-          <button type="button" className="primary" onClick={onClose}>
-            我已保存
-          </button>
-        </div>
-      </div>
-    </div>
+      </Space>
+    </Modal>
   )
 }
 
@@ -846,84 +1061,124 @@ function AccountsView({
   onDetail: (a: Account) => void
   onBuckets: (a: Account) => void
 }) {
+  const columns: TableProps<Account>['columns'] = [
+    { title: '账号名', dataIndex: 'name', width: 120 },
+    {
+      title: '默认桶',
+      dataIndex: 'bucket',
+      width: 140,
+      render: (_value, a) =>
+        a.bucketExists ? (
+          <Typography.Text className="objbox-mono">{a.bucket}</Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">未建桶</Typography.Text>
+        ),
+    },
+    {
+      title: 'AK',
+      dataIndex: 'ak',
+      width: 200,
+      render: (_value, a) => (
+        <Space size={4} wrap>
+          <Typography.Text code className="objbox-mono">
+            {a.ak}
+          </Typography.Text>
+          <CopyButton value={a.ak} />
+        </Space>
+      ),
+    },
+    {
+      title: 'SK',
+      dataIndex: 'sk',
+      width: 220,
+      render: (_value, a) => (
+        <SecretCell
+          masked={a.sk}
+          secret={secrets[a.name]}
+          shown={!!shown[a.name]}
+          onToggle={() => onToggleSecret(a.name)}
+        />
+      ),
+    },
+    {
+      title: 'root 路径',
+      dataIndex: 'root',
+      width: 220,
+      render: (value: string) => <Typography.Text className="objbox-mono">{value}</Typography.Text>,
+    },
+    {
+      title: '用量',
+      dataIndex: 'usageBytes',
+      width: 100,
+      render: (value: number) => formatBytes(value),
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 90,
+      render: (_value, a) => <Tag color={statusColor[a.status]}>{statusLabel[a.status]}</Tag>,
+    },
+    { title: '备注', dataIndex: 'note', width: 140 },
+    {
+      title: '操作',
+      key: 'ops',
+      fixed: 'right',
+      width: 300,
+      render: (_value, a) => (
+        <Space size={0} wrap>
+          <Button type="link" size="small" onClick={() => onDetail(a)}>
+            详情
+          </Button>
+          <Button type="link" size="small" onClick={() => onBuckets(a)}>
+            桶管理
+          </Button>
+          <Popconfirm
+            title={`确定轮换账号 ${a.name} 的 SK？旧 SK 将立即失效。`}
+            onConfirm={() => onRotate(a.name)}
+          >
+            <Button type="link" size="small">
+              轮换 SK
+            </Button>
+          </Popconfirm>
+          <Button type="link" size="small" onClick={() => onToggle(a)}>
+            {a.disabled ? '启用' : '停用'}
+          </Button>
+          <Button type="link" size="small" onClick={() => onEdit(a)}>
+            编辑
+          </Button>
+          <Popconfirm
+            title={`确定删除账号 ${a.name}？账号表条目会被移除，数据目录保留。`}
+            onConfirm={() => onDelete(a.name)}
+          >
+            <Button type="link" size="small" danger>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
   return (
-    <main className="content">
-      <div className="toolbar">
-        <h2>账号列表</h2>
-        <button type="button" className="primary" onClick={onAdd}>
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <div className="objbox-section-head" style={{ marginBottom: 0 }}>
+        <Typography.Title level={4} style={{ margin: 0 }}>
+          账号列表
+        </Typography.Title>
+        <Button type="primary" onClick={onAdd}>
           新增账号
-        </button>
+        </Button>
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th>账号名</th>
-            <th>默认桶</th>
-            <th>AK</th>
-            <th>SK</th>
-            <th>root 路径</th>
-            <th>用量</th>
-            <th>状态</th>
-            <th>备注</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {accounts.map((a) => (
-            <tr key={a.name}>
-              <td>{a.name}</td>
-              <td className={a.bucketExists ? 'path' : 'muted'}>
-                {a.bucketExists ? a.bucket : '未建桶'}
-              </td>
-              <td>
-                <code>{a.ak}</code> <CopyButton value={a.ak} />
-              </td>
-              <td>
-                <SecretCell
-                  masked={a.sk}
-                  secret={secrets[a.name]}
-                  shown={!!shown[a.name]}
-                  onToggle={() => onToggleSecret(a.name)}
-                />
-              </td>
-              <td className="path">{a.root}</td>
-              <td>{formatBytes(a.usageBytes)}</td>
-              <td>
-                <span className={`status ${a.status}`}>{statusLabel[a.status]}</span>
-              </td>
-              <td>{a.note}</td>
-              <td className="ops">
-                <button type="button" className="link" onClick={() => onDetail(a)}>
-                  详情
-                </button>
-                <button type="button" className="link" onClick={() => onBuckets(a)}>
-                  桶管理
-                </button>
-                <button type="button" className="link" onClick={() => onRotate(a.name)}>
-                  轮换 SK
-                </button>
-                <button type="button" className="link" onClick={() => onToggle(a)}>
-                  {a.disabled ? '启用' : '停用'}
-                </button>
-                <button type="button" className="link" onClick={() => onEdit(a)}>
-                  编辑
-                </button>
-                <button type="button" className="link danger" onClick={() => onDelete(a.name)}>
-                  删除
-                </button>
-              </td>
-            </tr>
-          ))}
-          {accounts.length === 0 ? (
-            <tr>
-              <td colSpan={9} className="muted">
-                暂无账号
-              </td>
-            </tr>
-          ) : null}
-        </tbody>
-      </table>
-    </main>
+      <Table
+        rowKey="name"
+        columns={columns}
+        dataSource={accounts}
+        pagination={false}
+        scroll={{ x: 1530 }}
+        sticky={{ offsetHeader: 64 }}
+        locale={{ emptyText: '暂无账号' }}
+      />
+    </Space>
   )
 }
 
@@ -942,6 +1197,7 @@ interface SecretState {
 export default function App() {
   const mode: AuthMode = window.__OBJBOX_AUTH_MODE__ === 'sso' ? 'sso' : 'builtin'
   const [, navigate] = useHashRoute()
+  const isNarrow = useNarrow()
   const [authed, setAuthed] = useState(false)
   const [user, setUser] = useState('')
   const [overview, setOverview] = useState<Overview | null>(null)
@@ -958,6 +1214,7 @@ export default function App() {
   const [bucketTarget, setBucketTarget] = useState<Account | null>(null)
   const [secret, setSecret] = useState<SecretState | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [shown, setShown] = useState<Record<string, boolean>>({})
 
@@ -1068,9 +1325,6 @@ export default function App() {
   }
 
   const onRotate = async (name: string) => {
-    if (!window.confirm(`确定轮换账号 ${name} 的 SK？旧 SK 将立即失效。`)) {
-      return
-    }
     try {
       const r = await api.rotate(name)
       setSecrets((prev) => ({ ...prev, [name]: r.sk }))
@@ -1092,9 +1346,6 @@ export default function App() {
   }
 
   const onDelete = async (name: string) => {
-    if (!window.confirm(`确定删除账号 ${name}？账号表条目会被移除，数据目录保留。`)) {
-      return
-    }
     try {
       await api.remove(name)
       await refresh()
@@ -1104,7 +1355,11 @@ export default function App() {
   }
 
   if (loading && !authed) {
-    return <div className="center muted">加载中…</div>
+    return (
+      <div className="objbox-center">
+        <Typography.Text type="secondary">加载中…</Typography.Text>
+      </div>
+    )
   }
 
   if (!authed) {
@@ -1115,28 +1370,57 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <Layout className="objbox-layout">
       <TopBar
         mode={mode}
         user={user}
         overview={overview}
+        isNarrow={isNarrow}
         onLogout={() => void onLogout()}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenMenu={() => setMenuOpen(true)}
       />
-      {error ? <div className="banner error">{error}</div> : null}
-      <AccountsView
-        accounts={accounts}
-        secrets={secrets}
-        shown={shown}
-        onToggleSecret={(n) => void onToggleSecret(n)}
-        onAdd={() => setAddOpen(true)}
-        onRotate={(n) => void onRotate(n)}
-        onToggle={(a) => void onToggle(a)}
-        onEdit={(a) => setEditTarget(a)}
-        onDelete={(n) => void onDelete(n)}
-        onDetail={(a) => setDetail(a)}
-        onBuckets={(a) => setBucketTarget(a)}
+      <Layout>
+        {!isNarrow ? (
+          <Layout.Sider theme="light" width={180} breakpoint="lg">
+            <Menu
+              mode="inline"
+              selectedKeys={['/accounts']}
+              onClick={() => navigate('/accounts')}
+              items={[{ key: '/accounts', label: '账号' }]}
+            />
+          </Layout.Sider>
+        ) : null}
+        <Layout.Content className="objbox-content">
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            {error ? <Alert type="error" showIcon message={error} /> : null}
+            <AccountsView
+              accounts={accounts}
+              secrets={secrets}
+              shown={shown}
+              onToggleSecret={(n) => void onToggleSecret(n)}
+              onAdd={() => setAddOpen(true)}
+              onRotate={(n) => void onRotate(n)}
+              onToggle={(a) => void onToggle(a)}
+              onEdit={(a) => setEditTarget(a)}
+              onDelete={(n) => void onDelete(n)}
+              onDetail={(a) => setDetail(a)}
+              onBuckets={(a) => setBucketTarget(a)}
+            />
+          </Space>
+        </Layout.Content>
+      </Layout>
+
+      <NarrowMenu
+        open={menuOpen}
+        mode={mode}
+        user={user}
+        overview={overview}
+        onClose={() => setMenuOpen(false)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onLogout={() => void onLogout()}
       />
+
       {addOpen ? (
         <AddAccountModal
           onClose={() => setAddOpen(false)}
@@ -1201,6 +1485,6 @@ export default function App() {
         />
       ) : null}
       {settingsOpen ? <SettingsModal onClose={() => setSettingsOpen(false)} /> : null}
-    </div>
+    </Layout>
   )
 }
