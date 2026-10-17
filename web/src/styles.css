@@ -111,3 +111,79 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
 }
+
+/* ---- 响应式：窄屏与触摸指针 ----
+   仅在 (max-width: 991.98px) 或 (pointer: coarse) 下生效；≥992px 桌面分支不写任何规则，
+   保证桌面观感逐像素不变（需求书 §0）。选择器一律落在 antd 组件类上，不新造颜色/圆角/字号。 */
+
+@media (max-width: 991.98px), (pointer: coarse) {
+  /* 触摸目标：主要操作 ≥44px 高。 */
+  .ant-btn {
+    min-height: 44px;
+  }
+
+  /* 次要图标按钮 ≥32×32（弹窗关闭按钮也是图标）。 */
+  .ant-btn.ant-btn-icon-only,
+  .ant-modal-close {
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  /* 表单输入框（含口令框、文本域）≥44px 高。 */
+  .ant-input,
+  .ant-input-affix-wrapper {
+    min-height: 44px;
+  }
+
+  /* 下拉/分段选择器 ≥44px 高；分段项内容区抬到 40px，加上轨道内边距约 44px。 */
+  .ant-segmented-item-label {
+    min-height: 40px;
+    line-height: 40px;
+  }
+
+  /* 勾选框命中区抬到 44px：整行 label 可点，不必精确点到 16px 方块。 */
+  .ant-checkbox-wrapper {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  /* 触摸目标间距 ≥8px。Space.Compact 靠边框合并，加了 gap 会裂开，必须排除。 */
+  .ant-space:not(.ant-space-compact) {
+    column-gap: 8px !important;
+    row-gap: 8px !important;
+  }
+
+  /* 可见文本 ≥12px：antd Typography 的 code 默认 85%（12px 字号下只有 10.2px）。 */
+  .objbox-mono code,
+  .objbox-copyblock code {
+    font-size: 12px;
+  }
+
+  /* 工具栏允许换行，标题与操作不再互相挤压。 */
+  .objbox-section-head {
+    flex-wrap: wrap;
+    gap: 8px;
+    row-gap: 8px;
+  }
+
+  /* 窄屏收敛内边距，把可视宽度还给内容。 */
+  .objbox-header {
+    padding: 0 12px;
+  }
+
+  .objbox-content {
+    padding: 12px 12px 32px;
+  }
+
+  /* 登录卡片不超过视口。 */
+  .objbox-login-card {
+    width: 100%;
+    max-width: 320px;
+  }
+
+  /* 桶面板表单单列：默认桶字段独占一行，勾选框与保存按钮落到下一行。 */
+  .objbox-buckets .objbox-field {
+    flex: 1 1 100%;
+  }
+}
+
