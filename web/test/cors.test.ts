@@ -95,12 +95,79 @@ test('main.tsx：包 ConfigProvider(locale+algorithm) 与 antd App，无自定�
   assert.doesNotMatch(mainSource, /\bcomponents\s*:/)
 })
 
-test('App.tsx：操作列 fixed right + 明确 width + scroll x，长表 sticky offsetHeader 64', () => {
-  assert.match(appSource, /fixed:\s*'right'/)
-  assert.match(appSource, /width:\s*300/)
-  assert.match(appSource, /scroll=\{\{\s*x:\s*\d+/)
+test('App.tsx：操作列 narrow 取消固定、放宽列宽；每张 Table 走 max-content 横滑', () => {
+  // 桌面固定右列保持不变；窄屏改为随整表横滑，避免固定列宽大于视口时错位。
+  assert.match(appSource, /fixed:\s*isNarrow\s*\?\s*undefined\s*:\s*'right'/)
+  assert.match(appSource, /width:\s*isNarrow\s*\?\s*360\s*:\s*300/)
   assert.match(appSource, /sticky=\{\{\s*offsetHeader:\s*64\s*\}\}/)
+
+  const tables = appSource.match(/<Table\b/g) ?? []
+  const maxContent = appSource.match(/scroll=\{\{\s*x:\s*'max-content'\s*\}\}/g) ?? []
+  assert.equal(tables.length, 2, '全仓应有两张 Table')
+  assert.equal(maxContent.length, tables.length, '每张 Table 都要带 scroll x max-content')
+  // 不许再有写死的横向像素宽（会让窄屏装上不下又无横滑的原因之一）。
+  assert.doesNotMatch(appSource, /scroll=\{\{\s*x:\s*\d/)
 })
+
+test('App.tsx：窄屏断点 991.98px（≥992px 一律桌面分支）', () => {
+  assert.match(appSource, /NARROW_QUERY/)
+  assert.match(appSource, /991\.98px/)
+})
+
+test('App.tsx：窄屏导航不隐藏，改由抽屉承载（与桌面一致的账号入口）', () => {
+  assert.match(appSource, /onNavigate/)
+  assert.match(appSource, /function NarrowMenu\b/)
+  // 抽屉里的 Menu 与桌面 Sider 用同一批 items。
+  const menus = appSource.match(/selectedKeys=\{\['\/accounts'\]\}/g) ?? []
+  assert.ok(menus.length >= 2, '桌面侧栏与窄屏抽屉都要有账号导航')
+})
+
+// —— 响应式样式回归（jsdom 量不到像素，改断言媒体查询/阈值，见交付报告说明）——
+
+const stylesSource = readFileSync(join(here, '..', 'src', 'styles.css'), 'utf8')
+const mediaStart = stylesSource.indexOf('@media (max-width: 991.98px)')
+const mediaBlock = mediaStart === -1 ? '' : stylesSource.slice(mediaStart)
+
+test('styles.css：响应式规则只在窄屏/粗指针媒体查询内，且同一条条件同时覆盖两者', () => {
+  assert.match(stylesSource, /@media\s*\(max-width:\s*991\.98px\),\s*\(pointer:\s*coarse\)/)
+})
+
+test('styles.css：触摸目标达标（主操作 44、图标 32、输入 44、勾选 44、间距 8）', () => {
+  assert.match(mediaBlock, /\.ant-btn\s*\{[^}]*min-height:\s*44px/s)
+  assert.match(mediaBlock, /\.ant-btn\.ant-btn-icon-only[\s\S]*?min-width:\s*32px/)
+  assert.match(mediaBlock, /\.ant-input[\s\S]*?min-height:\s*44px/)
+  assert.match(mediaBlock, /\.ant-checkbox-wrapper\s*\{[^}]*min-height:\s*44px/s)
+  assert.match(
+    mediaBlock,
+    /\.ant-space:not\(\.ant-space-compact\)\s*\{[^}]*column-gap:\s*8px\s*!important/s,
+  )
+})
+
+test('styles.css：可见文本 ≥12px（antd code 默认 85%，窄屏抬回 12px）', () => {
+  assert.match(mediaBlock, /\.objbox-mono code[\s\S]*?font-size:\s*12px/)
+  const sizes = [...stylesSource.matchAll(/font-size:\s*(\d+(?:\.\d+)?)px/g)].map((m) =>
+    Number(m[1]),
+  )
+  assert.ok(sizes.length > 0)
+  for (const size of sizes) {
+    assert.ok(size >= 12, `自定义字号 ${size}px 低于 12px`)
+  }
+})
+
+test('styles.css：不给容器加 overflow:hidden（保持表体横滑可用）', () => {
+  assert.doesNotMatch(stylesSource, /overflow(-x|-y)?:\s*hidden/)
+})
+
+test('docs/COMPONENTS.md：可复用组件已登记且文件头有用途说明', () => {
+  const doc = readFileSync(join(here, '..', '..', 'docs', 'COMPONENTS.md'), 'utf8')
+  for (const name of ['Field', 'CopyButton', 'SecretCell']) {
+    assert.match(doc, new RegExp(`\\b${name}\\b`))
+  }
+  assert.match(appSource, /\/\/ Field：/)
+  assert.match(appSource, /function CopyButton\b/)
+  assert.match(appSource, /function SecretCell\b/)
+})
+
 
 test('App.tsx：主题三态 Segmented（自动/亮色/暗色）', () => {
   assert.match(appSource, /自动/)

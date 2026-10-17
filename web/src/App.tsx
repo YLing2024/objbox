@@ -53,14 +53,17 @@ function useHashRoute(): [string, (r: string) => void] {
   return [route, navigate]
 }
 
-// useNarrow：窄屏判定，用于把顶栏操作收进抽屉。
+// useNarrow：窄屏判定，用于把顶栏操作收进抽屉、切换表格的固定列策略。
+// 断点取 991.98px：≥992px 一律走桌面分支，保证桌面观感逐像素不变（见需求书 §0）。
+const NARROW_QUERY = '(max-width: 991.98px)'
+
 function useNarrow(): boolean {
   const subscribe = useCallback((callback: () => void) => {
-    const mql = window.matchMedia('(max-width: 767px)')
+    const mql = window.matchMedia(NARROW_QUERY)
     mql.addEventListener('change', callback)
     return () => mql.removeEventListener('change', callback)
   }, [])
-  const getSnapshot = useCallback(() => window.matchMedia('(max-width: 767px)').matches, [])
+  const getSnapshot = useCallback(() => window.matchMedia(NARROW_QUERY).matches, [])
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
@@ -318,7 +321,7 @@ function BucketPanel({
         dataSource={buckets}
         loading={loading}
         pagination={false}
-        scroll={{ x: 650 }}
+        scroll={{ x: 'max-content' }}
         locale={{ emptyText: '暂无桶' }}
       />
 
@@ -575,13 +578,14 @@ function TopBar({
   )
 }
 
-// 窄屏抽屉：把统计、主题三态、设置与退出收进来，确保切换控件始终可达。
+// 窄屏抽屉：把导航、统计、主题三态、设置与退出收进来，确保切换控件始终可达。
 function NarrowMenu({
   open,
   mode,
   user,
   overview,
   onClose,
+  onNavigate,
   onOpenSettings,
   onLogout,
 }: {
@@ -590,12 +594,23 @@ function NarrowMenu({
   user: string
   overview: Overview | null
   onClose: () => void
+  onNavigate: (route: string) => void
   onOpenSettings: () => void
   onLogout: () => void
 }) {
   return (
     <Drawer placement="right" open={open} onClose={onClose} width={280}>
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        {/* 窄屏不隐藏导航：用抽屉承载与桌面侧边栏一致的入口。 */}
+        <Menu
+          mode="inline"
+          selectedKeys={['/accounts']}
+          onClick={() => {
+            onClose()
+            onNavigate('/accounts')
+          }}
+          items={[{ key: '/accounts', label: '账号' }]}
+        />
         <ThemeSwitcher />
         <Space direction="vertical" size={4}>
           <Tag color="blue">{mode === 'sso' ? 'SSO' : 'builtin'}</Tag>
@@ -1040,6 +1055,7 @@ function AccountsView({
   accounts,
   secrets,
   shown,
+  isNarrow,
   onToggleSecret,
   onAdd,
   onRotate,
@@ -1052,6 +1068,7 @@ function AccountsView({
   accounts: Account[]
   secrets: Record<string, string>
   shown: Record<string, boolean>
+  isNarrow: boolean
   onToggleSecret: (name: string) => void
   onAdd: () => void
   onRotate: (name: string) => void
@@ -1122,8 +1139,10 @@ function AccountsView({
     {
       title: '操作',
       key: 'ops',
-      fixed: 'right',
-      width: 300,
+      // 桌面固定右列（宽度与列内间距保持不变）；窄屏取消固定，避免固定列宽大于视口时错位，
+      // 改为随整表横向滚动，并放宽列宽让 6 个操作排成一行不换行。
+      fixed: isNarrow ? undefined : 'right',
+      width: isNarrow ? 360 : 300,
       render: (_value, a) => (
         <Space size={0} wrap>
           <Button type="link" size="small" onClick={() => onDetail(a)}>
@@ -1174,7 +1193,7 @@ function AccountsView({
         columns={columns}
         dataSource={accounts}
         pagination={false}
-        scroll={{ x: 1530 }}
+        scroll={{ x: 'max-content' }}
         sticky={{ offsetHeader: 64 }}
         locale={{ emptyText: '暂无账号' }}
       />
@@ -1398,6 +1417,7 @@ export default function App() {
               accounts={accounts}
               secrets={secrets}
               shown={shown}
+              isNarrow={isNarrow}
               onToggleSecret={(n) => void onToggleSecret(n)}
               onAdd={() => setAddOpen(true)}
               onRotate={(n) => void onRotate(n)}
@@ -1417,6 +1437,7 @@ export default function App() {
         user={user}
         overview={overview}
         onClose={() => setMenuOpen(false)}
+        onNavigate={navigate}
         onOpenSettings={() => setSettingsOpen(true)}
         onLogout={() => void onLogout()}
       />
