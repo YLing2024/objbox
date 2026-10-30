@@ -143,6 +143,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 品牌图标属于公开静态资源，不参与 S3 签名校验（浏览器地址栏会无条件请求）。
+	if isBrandIconPath(r.URL.Path) {
+		s.serveEmbedded(w, r, strings.TrimPrefix(r.URL.Path, "/"))
+		return
+	}
+
 	if s.admin != nil && s.serveAdminStatic(w, r) {
 		return
 	}
@@ -458,4 +464,11 @@ func bucketInRoot(root, bucket string) bool {
 	}
 	fi, err := os.Stat(filepath.Join(root, bucket))
 	return err == nil && fi.IsDir()
+}
+
+
+// isBrandIconPath 判断是否为站点图标（favicon / PWA 图标），这些路径公开可读。
+func isBrandIconPath(p string) bool {
+	return strings.HasPrefix(p, "/icons/") || p == "/favicon.svg" || p == "/favicon-32.png" ||
+		p == "/apple-touch-icon-180.png"
 }

@@ -32,7 +32,8 @@ func (s *Server) serveAdminStatic(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	p := r.URL.Path
-	if strings.HasPrefix(p, "/assets/") {
+	if strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/icons/") ||
+		p == "/favicon.svg" || p == "/favicon-32.png" || p == "/apple-touch-icon-180.png" {
 		s.serveEmbedded(w, r, strings.TrimPrefix(p, "/"))
 		return true
 	}
@@ -77,7 +78,8 @@ func (s *Server) serveEmbedded(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 	rel := strings.TrimPrefix(path.Clean("/"+name), "/")
-	if !strings.HasPrefix(rel, "assets/") {
+	if !strings.HasPrefix(rel, "assets/") && !strings.HasPrefix(rel, "icons/") &&
+		rel != "favicon.svg" && rel != "favicon-32.png" && rel != "apple-touch-icon-180.png" {
 		http.NotFound(w, r)
 		return
 	}
