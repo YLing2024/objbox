@@ -551,7 +551,7 @@ function TopBar({
   )
   return (
     <Layout.Header className="objbox-header" style={light}>
-      <span className="objbox-brand">objbox 管理</span>
+      <span className="objbox-brand"><svg width={18} height={18} viewBox="0 0 512 512" aria-hidden="true" style={{ verticalAlign: '-3px', marginRight: 8 }}><path d="M 126 176 h 260 l -34 244 h -192 z" fill="currentColor"/><path d="M 126 176 h 260 l -8 60 h -244 z" fill="#9A3412"/><path d="M 200 300 h 112" stroke="#fff" strokeWidth="20" strokeLinecap="round"/></svg>objbox 管理</span>
       {!isNarrow ? stats : null}
       <div className="objbox-header-right" style={light}>
         {isNarrow ? (
