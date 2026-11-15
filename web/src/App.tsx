@@ -103,12 +103,17 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
+// CopyButton：复制文本到剪贴板。
+// value 是静态文本；需要按需拉取（如掩码状态的 SK）时改用 getValue，它在点击时才执行，
+// 返回空串/undefined 或抛错都按「静默失败」处理（不弹错、不显示「已复制」）。
 function CopyButton({
   value,
+  getValue,
   label = '复制',
   disabled = false,
 }: {
-  value: string
+  value?: string
+  getValue?: () => Promise<string | undefined> | string | undefined
   label?: string
   disabled?: boolean
 }) {
@@ -118,11 +123,16 @@ function CopyButton({
       return
     }
     try {
-      await navigator.clipboard.writeText(value)
+      // getValue 优先：允许调用方在点击瞬间才去后端取明文，避免提前缓存到组件里。
+      const text = getValue ? await getValue() : value
+      if (!text) {
+        return
+      }
+      await navigator.clipboard.writeText(text)
       setDone(true)
       window.setTimeout(() => setDone(false), 1500)
     } catch {
-      // 剪贴板不可用时静默失败
+      // 剪贴板不可用或取值失败时静默失败
     }
   }
   return (
@@ -133,18 +143,22 @@ function CopyButton({
 }
 
 // SK 显隐：点击一次切换为常显，再点一次隐藏（不依赖 hover / 按住 / 鼠标按键，触摸与鼠标一致）。
-// 列表与详情窗口共用本组件，掩码时复制按钮禁用、常显时可复制。
-// 手工验证：桌面点击「显示」一次 → 保持明文；手机触摸点击一次 → 同样保持明文，不会立即回弹。
+// 列表与详情窗口共用本组件。掩码状态下复制按钮依然可用：点击时通过 getValue 按需取明文，
+// 只写剪贴板、不改 shown，所以界面不会出现明文；「显示」按钮行为不变。
+// 手工验证：桌面点击「显示」一次 → 保持明文；手机触摸点击一次 → 同样保持明文，不会立即回弹；
+// 掩码下点「复制」→ 按钮变「已复制」而单元格仍是掩码。
 function SecretCell({
   masked,
   secret,
   shown,
   onToggle,
+  getValue,
 }: {
   masked: string
   secret?: string
   shown: boolean
   onToggle: () => void
+  getValue?: () => Promise<string | undefined> | string | undefined
 }) {
   const display = shown && secret ? secret : masked
   return (
@@ -155,7 +169,8 @@ function SecretCell({
       <Button type="link" size="small" onClick={onToggle}>
         {shown ? '隐藏' : '显示'}
       </Button>
-      <CopyButton value={secret ?? ''} disabled={!shown || !secret} />
+      {/* 已缓存明文时直接用 secret，省一次请求；否则点击时再取。 */}
+      <CopyButton value={secret} getValue={getValue} />
     </Space>
   )
 }
@@ -763,6 +778,7 @@ function AccountDetailModal({
   secrets,
   shown,
   onToggleSecret,
+  onFetchSecret,
   onAccountChanged,
   onClose,
 }: {
@@ -773,6 +789,7 @@ function AccountDetailModal({
   secrets: Record<string, string>
   shown: Record<string, boolean>
   onToggleSecret: (name: string) => void
+  onFetchSecret: (name: string) => Promise<string | undefined>
   onAccountChanged: (a: Account) => void
   onClose: () => void
 }) {
@@ -840,6 +857,7 @@ function AccountDetailModal({
           secret={secrets[account.name]}
           shown={secretShown}
           onToggle={() => onToggleSecret(account.name)}
+          getValue={() => onFetchSecret(account.name)}
         />
       ),
     },
@@ -1057,6 +1075,7 @@ function AccountsView({
   shown,
   isNarrow,
   onToggleSecret,
+  onFetchSecret,
   onAdd,
   onRotate,
   onToggle,
@@ -1070,6 +1089,7 @@ function AccountsView({
   shown: Record<string, boolean>
   isNarrow: boolean
   onToggleSecret: (name: string) => void
+  onFetchSecret: (name: string) => Promise<string | undefined>
   onAdd: () => void
   onRotate: (name: string) => void
   onToggle: (a: Account) => void
@@ -1114,6 +1134,7 @@ function AccountsView({
           secret={secrets[a.name]}
           shown={!!shown[a.name]}
           onToggle={() => onToggleSecret(a.name)}
+          getValue={() => onFetchSecret(a.name)}
         />
       ),
     },
@@ -1311,29 +1332,45 @@ export default function App() {
     navigate('/login')
   }
 
+  // fetchSecret 是取 SK 明文的唯一入口：命中缓存直接返回，否则 api.reveal 后写缓存。
+  // 失败返回 undefined 并 setError（保持与原先「显示」失败时同样的提示），调用方不必再抛错。
+  const fetchSecret = useCallback(
+    async (name: string): Promise<string | undefined> => {
+      const cached = secrets[name]
+      if (cached) {
+        return cached
+      }
+      try {
+        const r = await api.reveal(name)
+        const found = r.accounts.find((a) => a.name === name)
+        if (!found) {
+          setError('读取 SK 失败')
+          return undefined
+        }
+        setSecrets((prev) => ({ ...prev, [name]: found.sk }))
+        return found.sk
+      } catch (e) {
+        setError(e instanceof Error ? e.message : '读取 SK 失败')
+        return undefined
+      }
+    },
+    [secrets],
+  )
+
   const onToggleSecret = useCallback(
     async (name: string) => {
       if (shown[name]) {
         setShown((prev) => ({ ...prev, [name]: false }))
         return
       }
-      if (!secrets[name]) {
-        try {
-          const r = await api.reveal(name)
-          const found = r.accounts.find((a) => a.name === name)
-          if (!found) {
-            setError('读取 SK 失败')
-            return
-          }
-          setSecrets((prev) => ({ ...prev, [name]: found.sk }))
-        } catch (e) {
-          setError(e instanceof Error ? e.message : '读取 SK 失败')
-          return
-        }
+      // 与「复制」共用 fetchSecret：拉取失败已由它 setError，这里只负责不切换显隐。
+      const sk = await fetchSecret(name)
+      if (!sk) {
+        return
       }
       setShown((prev) => ({ ...prev, [name]: true }))
     },
-    [shown, secrets],
+    [shown, fetchSecret],
   )
 
   const closeDetail = () => {
@@ -1419,6 +1456,7 @@ export default function App() {
               shown={shown}
               isNarrow={isNarrow}
               onToggleSecret={(n) => void onToggleSecret(n)}
+              onFetchSecret={fetchSecret}
               onAdd={() => setAddOpen(true)}
               onRotate={(n) => void onRotate(n)}
               onToggle={(a) => void onToggle(a)}
@@ -1482,6 +1520,7 @@ export default function App() {
           secrets={secrets}
           shown={shown}
           onToggleSecret={(n) => void onToggleSecret(n)}
+          onFetchSecret={fetchSecret}
           onAccountChanged={applyAccount}
           onClose={closeDetail}
         />

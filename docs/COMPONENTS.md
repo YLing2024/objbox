@@ -7,8 +7,8 @@
 | 组件 | 用途 | 关键 props / 事件 | 最小示例 | 注意事项 |
 |---|---|---|---|---|
 | `Field` | 弹层里「标签在上、控件在下」的表单行 | `label: ReactNode`（必填）、`children: ReactNode`（必填） | `<Field label="备注"><Input value={note} onChange={...} /></Field>` | 纯布局，不接管校验；窄屏由父级 `Space wrap` 自适应到单列 |
-| `CopyButton` | 复制文本到剪贴板的行内按钮 | `value: string`、`label?: string`（默认 `复制`）、`disabled?: boolean`（默认 `false`） | `<CopyButton value={a.ak} />` | 剪贴板不可用时静默失败；按钮为次要操作，窄屏下由全局媒体查询保证触摸目标尺寸 |
-| `SecretCell` | SK 掩码/明文切换单元格，列表与详情窗口共用 | `masked: string`、`secret?: string`、`shown: boolean`、`onToggle: () => void` | `<SecretCell masked={a.sk} secret={secrets[a.name]} shown={!!shown[a.name]} onToggle={() => onToggleSecret(a.name)} />` | 点击一次切换常显、再点隐藏，不依赖 hover（触摸与鼠标一致）；掩码时复制按钮禁用；不改变脱敏逻辑 |
+| `CopyButton` | 复制文本到剪贴板的行内按钮 | `value?: string`、`getValue?: () => Promise<string \| undefined> \| string \| undefined`、`label?: string`（默认 `复制`）、`disabled?: boolean`（默认 `false`） | `<CopyButton value={a.ak} />`；按需取明文：`<CopyButton getValue={() => fetchSecret(name)} />` | 给了 `getValue` 时点击才执行它，取到字符串再写剪贴板，空值/报错静默失败、不弹错；剪贴板不可用时同样静默失败；按钮为次要操作，窄屏下由全局媒体查询保证触摸目标尺寸 |
+| `SecretCell` | SK 掩码/明文切换单元格，列表与详情窗口共用 | `masked: string`、`secret?: string`、`shown: boolean`、`onToggle: () => void`、`getValue?: () => Promise<string \| undefined> \| string \| undefined` | `<SecretCell masked={a.sk} secret={secrets[a.name]} shown={!!shown[a.name]} onToggle={() => onToggleSecret(a.name)} getValue={() => fetchSecret(a.name)} />` | 点击一次切换常显、再点隐藏，不依赖 hover（触摸与鼠标一致）；掩码状态下复制按钮也可用，点击时经 `getValue` 按需取明文只写剪贴板、保持掩码；不改变脱敏逻辑 |
 | `BucketPanel` | 桶管理面板，账号详情窗口与「桶管理」窗口共用 | `account: Account`、`onAccountChanged: (a: Account) => void` | `<BucketPanel account={account} onAccountChanged={onAccountChanged} />` | 内嵌 Table 带 `scroll={{ x: 'max-content' }}`；新建/保存会写后端，改动后经 `onAccountChanged` 回传 |
 
 ## 可访问性要点
